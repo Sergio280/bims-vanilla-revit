@@ -1,0 +1,8 @@
+Versión de MSBuild 17.14.23+b0019275e para .NET Framework
+MSBUILD : error MSB1008: Sólo puede especificarse un proyecto.
+    Línea de comandos completa: '"C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" ClosestGridsAddinVANILLA.csproj "p:Configuration=Release R25" t:Build v:q'
+  Modificadores anexados por archivos de respuesta: 
+'' procedía de 'C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.rsp'
+Modificador: p:Configuration=Release R25
+
+Para modificar la sintaxis, escriba "MSBuild -help"

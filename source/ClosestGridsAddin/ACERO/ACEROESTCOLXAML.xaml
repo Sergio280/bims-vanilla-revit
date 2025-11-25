@@ -1,0 +1,129 @@
+﻿<Window x:Class="ClosestGridsAddinVANILLA.ACERO.ACEROESTCOLXAML"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:ClosestGridsAddinVANILLA.ACERO"
+        mc:Ignorable="d"
+        Title="ACERO DE REFUERZO EN ESTRIBOS DE COLUMNAS" Height="450" Width="344">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="250"/>
+            <RowDefinition Height="109*"/>
+            <RowDefinition Height="75*"/>
+        </Grid.RowDefinitions>
+
+        <GroupBox 
+        Grid.Row="0" 
+        Header="Distribución" 
+        Margin="15,15,15,15"
+        Padding="0,10,0,0">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <StackPanel 
+                Margin="20,10,0,0" 
+                Orientation="Vertical" 
+                HorizontalAlignment="Left">
+                    <TextBlock Text="En el confinamiento (ft.):  "/>
+                    <TextBox x:Name="confinamientoLonG" 
+                         Text="0.5" 
+                         HorizontalAlignment="Left" 
+                         Width="50" 
+                         Height="20"/>
+                </StackPanel>
+                <StackPanel Grid.Row="1" 
+                        Margin="20,10,0,0" 
+                        Orientation="Vertical" 
+                        HorizontalAlignment="Left">
+                    <TextBlock Text="Espaciamiento de estribos en la luz (ft.):  "/>
+                    <TextBox x:Name="espaciamientoenLuz" 
+                         Text="0.20" 
+                         HorizontalAlignment="Left" 
+                         Width="50" 
+                         Height="20"/>
+                </StackPanel>
+                <StackPanel Grid.Row="2" 
+                        Margin="20,10,0,0" 
+                        Orientation="Vertical" 
+                        HorizontalAlignment="Left">
+                    <TextBlock Text="Espaciamiento de estribos en el confinamiento (ft.):  "/>
+                    <TextBox x:Name="espaciamientoenConf" 
+                         Width="50" Height="20" 
+                         HorizontalAlignment="Left" 
+                         Text="0.10"/>
+                </StackPanel>
+            </Grid>
+        </GroupBox>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <GroupBox Grid.Row="0" 
+              Header="Recubrimiento" 
+              Margin="15">
+                <StackPanel Margin="20,10,0,0">
+                    <TextBlock Text="E (ft.):  "/>
+                    <TextBox x:Name="recubrimiento" 
+                     Text="0.04" 
+                     HorizontalAlignment="Left" 
+                     Width="50" Height="20"/>
+                </StackPanel>
+
+
+            </GroupBox>
+
+            <GroupBox Grid.Column="1" 
+              Header="Diametro:  " 
+              Margin="15">
+                <StackPanel Margin="20,10,0,0">
+                    <TextBlock Text="Ø:  "/>
+                    <ComboBox x:Name="diametro" 
+                     HorizontalAlignment="Left" 
+                     Width="50" Height="20"/>
+                </StackPanel>
+
+
+            </GroupBox>
+
+            <GroupBox Grid.Column="2" 
+              Header="Viga:  " 
+              Margin="15">
+                <StackPanel Margin="20,10,0,0">
+                    <TextBlock Text="H (ft.):  "/>
+                    <TextBox x:Name="Hviga" 
+                     Text="0.60"
+                     HorizontalAlignment="Left" 
+                     Width="50" Height="20"/>
+                </StackPanel>
+
+
+            </GroupBox>
+
+
+        </Grid>
+
+        <StackPanel Grid.Row="2" 
+                Orientation="Horizontal" 
+                Margin="15,15,15,15">
+            <Button Content="Aceptar" 
+                Width="60" Height="30" 
+                Background="White" 
+                Click="Button_Click"/>
+            <Button Margin="190,0,0,0" 
+                Content="Cancelar" 
+                IsCancel="True" 
+                Width="60" Height="30" 
+                Background="White"/>
+        </StackPanel>
+    </Grid>
+
+</Window>

@@ -1,0 +1,3 @@
+<PropertyGroup Condition="$(Configuration.Contains('R25'))">
+  <TargetFramework>net8.0-windows</TargetFramework>
+</PropertyGroup>

@@ -1,0 +1,83 @@
+<project baseDir="..\bin\Release R25\Obfuscator_Output" outputDir=".\ConfuserEx_Output" xmlns="http://confuser.codeplex.com">
+
+  <!-- Módulo a proteger (ya ofuscado por Obfuscar) -->
+  <module path="ClosestGridsAddinVANILLA.dll">
+
+    <!-- ⭐ PROTECCIONES AGRESIVAS ⭐ -->
+
+    <!-- Control Flow: Dificulta análisis del flujo de ejecución -->
+    <rule pattern="true" inherit="false">
+      <protection id="ctrl flow">
+        <argument name="predicate" value="expression" />
+        <argument name="intensity" value="high" />
+      </protection>
+    </rule>
+
+    <!-- Constants: Encripta constantes (números, strings) -->
+    <rule pattern="true" inherit="false">
+      <protection id="constants">
+        <argument name="mode" value="dynamic" />
+        <argument name="decoderCount" value="5" />
+      </protection>
+    </rule>
+
+    <!-- Anti-Tampering: Detecta modificaciones al DLL -->
+    <rule pattern="true" inherit="false">
+      <protection id="anti tamper">
+        <argument name="mode" value="normal" />
+        <argument name="key" value="dynamic" />
+      </protection>
+    </rule>
+
+    <!-- Anti-Debug: Previene debugging -->
+    <rule pattern="true" inherit="false">
+      <protection id="anti debug" />
+    </rule>
+
+    <!-- Anti-Dump: Previene volcado de memoria -->
+    <rule pattern="true" inherit="false">
+      <protection id="anti dump" />
+    </rule>
+
+    <!-- Reference Proxy: Ofusca llamadas a métodos -->
+    <rule pattern="true" inherit="false">
+      <protection id="ref proxy">
+        <argument name="mode" value="strong" />
+        <argument name="encoding" value="expression" />
+        <argument name="depth" value="3" />
+      </protection>
+    </rule>
+
+    <!-- Resources: Encripta recursos embebidos -->
+    <rule pattern="true" inherit="false">
+      <protection id="resources">
+        <argument name="mode" value="dynamic" />
+      </protection>
+    </rule>
+
+    <!-- ⚠️ EXCLUSIONES: Solo clases que Revit carga directamente ⚠️ -->
+
+    <!-- Application y comandos -->
+    <rule pattern="namespace('ClosestGridsAddinVANILLA') and name('Application')" inherit="true">
+      <protection id="ctrl flow" action="remove" />
+      <protection id="ref proxy" action="remove" />
+    </rule>
+
+    <rule pattern="inherits('Autodesk.Revit.UI.IExternalCommand')" inherit="true">
+      <protection id="ctrl flow" action="remove" />
+      <protection id="ref proxy" action="remove" />
+    </rule>
+
+    <!-- WPF/XAML -->
+    <rule pattern="namespace('ClosestGridsAddin.Views')" inherit="true">
+      <protection id="ctrl flow" action="remove" />
+      <protection id="constants" action="remove" />
+    </rule>
+
+  </module>
+
+  <!-- Rutas de dependencias -->
+  <probePath>.</probePath>
+  <probePath>C:\Program Files\Autodesk\Revit 2025</probePath>
+
+</project>

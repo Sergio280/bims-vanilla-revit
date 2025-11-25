@@ -1,0 +1,151 @@
+<Window x:Class="ClosestGridsAddinVANILLA.ParameterTransfer.TransferirIdConfigWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Configuración - Transferir ID"
+        Height="320"
+        Width="500"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        Background="#F5F5F5">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="20"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="15"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="15"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Título -->
+        <TextBlock Grid.Row="0"
+                   Text="Configuración de Transferencia de ID"
+                   FontSize="16"
+                   FontWeight="SemiBold"
+                   Foreground="#333333"/>
+
+        <!-- Nombre del parámetro -->
+        <StackPanel Grid.Row="2">
+            <TextBlock Text="Nombre del parámetro destino:"
+                       FontSize="12"
+                       Foreground="#555555"
+                       Margin="0,0,0,5"/>
+            <TextBox x:Name="txtParameterName"
+                     Height="30"
+                     Padding="8,5"
+                     FontSize="13"
+                     VerticalContentAlignment="Center"
+                     BorderBrush="#CCCCCC"
+                     BorderThickness="1"/>
+            <TextBlock Text="Ejemplo: OIP_ID_BIM, ID_ELEMENTO, etc."
+                       FontSize="10"
+                       Foreground="#888888"
+                       Margin="0,3,0,0"/>
+        </StackPanel>
+
+        <!-- Categoría -->
+        <StackPanel Grid.Row="4">
+            <TextBlock Text="Categoría a procesar:"
+                       FontSize="12"
+                       Foreground="#555555"
+                       Margin="0,0,0,5"/>
+            <ComboBox x:Name="cmbCategory"
+                      Height="30"
+                      Padding="8,5"
+                      FontSize="13"
+                      VerticalContentAlignment="Center"
+                      BorderBrush="#CCCCCC"
+                      BorderThickness="1"
+                      SelectedIndex="0"/>
+            <TextBlock Text="Si no selecciona una categoría específica, se procesarán todas."
+                       FontSize="10"
+                       Foreground="#888888"
+                       Margin="0,3,0,0"/>
+        </StackPanel>
+
+        <!-- Opciones adicionales -->
+        <CheckBox x:Name="chkProcessSelection"
+                  Grid.Row="6"
+                  Content="Procesar solo elementos seleccionados (si no hay selección, procesa todo el modelo)"
+                  FontSize="11"
+                  Foreground="#555555"
+                  IsChecked="True"/>
+
+        <!-- Botones -->
+        <StackPanel Grid.Row="8"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,10,0,0">
+            <Button x:Name="btnOk"
+                    Content="Aceptar"
+                    Width="100"
+                    Height="35"
+                    Margin="0,0,10,0"
+                    Background="#4CAF50"
+                    Foreground="White"
+                    FontSize="13"
+                    BorderThickness="0"
+                    Cursor="Hand"
+                    Click="BtnOk_Click">
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Setter Property="Background" Value="#4CAF50"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            CornerRadius="3"
+                                            Padding="10,5">
+                                        <ContentPresenter HorizontalAlignment="Center"
+                                                        VerticalAlignment="Center"/>
+                                    </Border>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#45a049"/>
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
+            <Button x:Name="btnCancel"
+                    Content="Cancelar"
+                    Width="100"
+                    Height="35"
+                    Background="#E0E0E0"
+                    Foreground="#333333"
+                    FontSize="13"
+                    BorderThickness="0"
+                    Cursor="Hand"
+                    Click="BtnCancel_Click">
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Setter Property="Background" Value="#E0E0E0"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            CornerRadius="3"
+                                            Padding="10,5">
+                                        <ContentPresenter HorizontalAlignment="Center"
+                                                        VerticalAlignment="Center"/>
+                                    </Border>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#D0D0D0"/>
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
+        </StackPanel>
+    </Grid>
+</Window>

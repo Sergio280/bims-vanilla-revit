@@ -1,0 +1,124 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<UseWpf>true</UseWpf>
+		<LangVersion>latest</LangVersion>
+		<PlatformTarget>x64</PlatformTarget>
+		<ImplicitUsings>true</ImplicitUsings>
+		<Configurations>Debug R25;Release R25</Configurations>
+		<!-- ✅ CLAVE: Esto copia TODAS las dependencias NuGet automáticamente -->
+		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="$(Configuration.Contains('R25'))">
+		<RevitVersion>2025</RevitVersion>
+		<TargetFramework>net8.0-windows</TargetFramework>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<!-- ✅ FireSharp con CopyLocal explícito -->
+		<PackageReference Include="Aspose.Cells" Version="25.10.0" />
+		<PackageReference Include="FireSharp" Version="2.0.4">
+			<PrivateAssets>none</PrivateAssets>
+			<ExcludeAssets>none</ExcludeAssets>
+		</PackageReference>
+
+		<PackageReference Include="Nice3point.Revit.Build.Tasks" Version="3.0.1" />
+		<PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="2026.3.0" />
+		<PackageReference Include="Nice3point.Revit.Api.RevitAPIUI" Version="2026.3.0" />
+		
+		<!-- ✅ Newtonsoft.Json con CopyLocal explícito -->
+		<PackageReference Include="Newtonsoft.Json" Version="13.0.4">
+			<PrivateAssets>none</PrivateAssets>
+			<ExcludeAssets>none</ExcludeAssets>
+		</PackageReference>
+
+		<PackageReference Include="Nice3point.Revit.Toolkit" Version="2026.0.0" />
+
+		<!-- ⭐ Obfuscar: DESHABILITADO - Ahora usamos .NET Reactor ⭐ -->
+	<!--<PackageReference Include="Obfuscar" Version="2.2.49" PrivateAssets="all" />-->
+		<PackageReference Include="System.Management" Version="9.0.10" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\Nice3point.Revit.Extensions\Nice3point.Revit.Extensions.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Content Include="ClosestGridsAddinVANILLA.addin">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+	</ItemGroup>
+
+	<!-- ✅ ICONOS: Copiar carpeta Resources al directorio de salida -->
+	<ItemGroup>
+		<None Include="Resources\*.png">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+	</ItemGroup>
+
+	<!-- ✅ Target para copiar carpeta Resources completa al output -->
+	<Target Name="CopyResourcesFolder" AfterTargets="Build">
+		<Message Text="Copiando iconos PNG a $(OutputPath)Resources\..." Importance="High" />
+		<MakeDir Directories="$(OutputPath)Resources" />
+		<Copy SourceFiles="@(None)" DestinationFolder="$(OutputPath)Resources" SkipUnchangedFiles="true" Condition="'%(Extension)' == '.png'" />
+	</Target>
+
+	<!-- ✅ Copiar explícitamente FireSharp y sus dependencias después de compilar -->
+	<Target Name="CopyFireSharpDependencies" AfterTargets="Build">
+		<Message Text="Copiando dependencias de FireSharp..." Importance="High" />
+		<ItemGroup>
+			<FireSharpFiles Include="$(OutputPath)FireSharp.dll" />
+			<FireSharpFiles Include="$(OutputPath)Newtonsoft.Json.dll" />
+			<FireSharpFiles Include="$(OutputPath)System.Net.Http.dll" />
+			<FireSharpFiles Include="$(OutputPath)System.Net.Http.Extensions.dll" />
+			<FireSharpFiles Include="$(OutputPath)System.Net.Http.Primitives.dll" />
+		</ItemGroup>
+		<Copy SourceFiles="@(FireSharpFiles)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="Exists('%(FullPath)')" />
+	</Target>
+	
+	<!-- ⭐ Obfuscar: DESHABILITADO - Ahora usamos .NET Reactor manualmente ⭐ -->
+	<!--
+	<PropertyGroup>
+		<ObfuscarVersion>2.2.49</ObfuscarVersion>
+		<ObfuscarToolsDir>$(NuGetPackageRoot)obfuscar\$(ObfuscarVersion)\tools\</ObfuscarToolsDir>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<_ObfuscarExe Include="$(ObfuscarToolsDir)**\Obfuscar.Console.exe" />
+		<_ObfuscarDll Include="$(ObfuscarToolsDir)**\Obfuscar.Console.dll" />
+	</ItemGroup>
+
+	<PropertyGroup>
+		<ObfuscarExePath>@(_ObfuscarExe->'%(FullPath)')</ObfuscarExePath>
+		<ObfuscarDllPath>@(_ObfuscarDll->'%(FullPath)')</ObfuscarDllPath>
+	</PropertyGroup>
+
+	<Target Name="Obfuscate" AfterTargets="Build" Condition="'$(Configuration)'=='Release R25'">
+		<Message Importance="High" Text="Obfuscando $(TargetFileName)..." />
+		<Message Importance="High" Text="Obfuscar exe=$(ObfuscarExePath) dll=$(ObfuscarDllPath)" />
+		<Error Condition="'$(ObfuscarExePath)'=='' and '$(ObfuscarDllPath)'==''" Text="No se encontró Obfuscar.Console en $(ObfuscarToolsDir). Verifica el paquete Obfuscar." />
+		<Exec Condition="'$(ObfuscarExePath)'!=''" WorkingDirectory="$(TargetDir)" ConsoleToMSBuild="true" Command="&quot;$(ObfuscarExePath)&quot; &quot;$(ProjectDir)Services\Obfuscar.xml&quot;" />
+		<Exec Condition="'$(ObfuscarExePath)'=='' and '$(ObfuscarDllPath)'!=''" WorkingDirectory="$(TargetDir)" ConsoleToMSBuild="true" Command="dotnet &quot;$(ObfuscarDllPath)&quot; &quot;$(ProjectDir)Services\Obfuscar.xml&quot;" />
+		<Message Importance="High" Text="Salida: $(TargetDir)Obfuscator_Output" />
+	</Target>
+	-->
+
+	<!-- ⭐ ConfuserEx: DESHABILITADO (opcional, ejecutar manualmente si se necesita) ⭐ -->
+	<!-- Para habilitar, cambiar Condition a '$(Configuration)'=='Release R25' -->
+	<!--
+	<PropertyGroup>
+		<ConfuserExPath>C:\Users\SERGIO\Documents\ConfuserEx\Confuser.CLI.exe</ConfuserExPath>
+	</PropertyGroup>
+
+	<Target Name="ConfuserExProtection" AfterTargets="Obfuscate" Condition="'$(Configuration)'=='NEVER'">
+		<Message Importance="High" Text="Aplicando protecciones ConfuserEx (Control Flow, Anti-Tamper, Anti-Debug)..." />
+		<Error Condition="!Exists('$(ConfuserExPath)')" Text="No se encontró ConfuserEx en $(ConfuserExPath). Verifica la instalación." />
+		<Exec WorkingDirectory="$(TargetDir)Obfuscator_Output"
+		      Command="&quot;$(ConfuserExPath)&quot; &quot;$(ProjectDir)Services\ConfuserEx.crproj&quot;"
+		      ConsoleToMSBuild="true" />
+		<Message Importance="High" Text="✅ Protección completa aplicada!" />
+		<Message Importance="High" Text="Salida final: $(TargetDir)Obfuscator_Output\ConfuserEx_Output" />
+	</Target>
+	-->
+
+</Project>

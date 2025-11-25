@@ -1,0 +1,111 @@
+╔══════════════════════════════════════════════════════════╗
+║  PANEL DE ADMINISTRACIÓN BIMS VANILLA - INICIO RÁPIDO   ║
+╚══════════════════════════════════════════════════════════╝
+
+📋 CONFIGURACIÓN (5 MINUTOS)
+
+1. OBTENER CREDENCIALES DE FIREBASE:
+   ✅ Ir a: https://console.firebase.google.com/
+   ✅ Seleccionar proyecto "BIMS"
+   ✅ Click en ⚙️ Configuración → "Configuración del proyecto"
+   ✅ Scroll a "Tus aplicaciones" → Click en "Web"
+   ✅ Copiar el objeto firebaseConfig completo
+
+2. COMPLETAR firebase-config.js:
+   ✅ Abrir: firebase-config.js
+   ✅ Reemplazar:
+      - "TU_API_KEY_AQUI" → Tu apiKey real
+      - "TU_MESSAGING_SENDER_ID" → Tu messagingSenderId real
+      - "TU_APP_ID" → Tu appId real
+   ✅ Guardar archivo
+
+3. CREAR CUENTA DE ADMINISTRADOR:
+   ✅ Firebase Console → Authentication → Users
+   ✅ Click "Add user"
+   ✅ Email: admin@bimsvanilla.com (o el que prefieras)
+   ✅ Password: (una contraseña segura)
+   ✅ Guardar credenciales
+
+╔══════════════════════════════════════════════════════════╗
+║  🚀 USAR EL PANEL                                        ║
+╚══════════════════════════════════════════════════════════╝
+
+1. ABRIR EL PANEL:
+   ✅ Doble click en: admin-panel.html
+   ✅ Se abre en tu navegador
+
+2. LOGIN:
+   ✅ Email: El que creaste en Firebase
+   ✅ Password: La contraseña
+
+3. ✅ ¡LISTO! Ya puedes gestionar licencias
+
+╔══════════════════════════════════════════════════════════╗
+║  📊 FUNCIONALIDADES                                      ║
+╚══════════════════════════════════════════════════════════╝
+
+✅ Ver todas las licencias en tiempo real
+✅ Buscar por email, nombre, License ID
+✅ Filtrar: Todas / Activas / Expiradas / Trial
+✅ Editar licencias (click en "Editar"):
+   • Cambiar tipo (Trial → Monthly → Annual → Lifetime)
+   • Extender fecha de expiración (+7, +30, +90, +365 días)
+   • Activar/Desactivar licencia
+   • Eliminar licencia
+✅ Ver estadísticas en tiempo real
+
+╔══════════════════════════════════════════════════════════╗
+║  ⚡ RENOVAR LICENCIA EXPIRADA (EJEMPLO)                  ║
+╚══════════════════════════════════════════════════════════╝
+
+1. Buscar usuario por email
+2. Click en "Editar"
+3. Click en botón "+30 días" (o el período que necesites)
+4. Click en "Guardar Cambios"
+5. ✅ Listo! El usuario puede usar el add-in inmediatamente
+
+╔══════════════════════════════════════════════════════════╗
+║  🔒 SEGURIDAD                                            ║
+╚══════════════════════════════════════════════════════════╝
+
+⚠️  NUNCA compartas:
+   - Credenciales de administrador
+   - Archivo firebase-config.js (contiene API keys)
+
+✅  Cambia la contraseña regularmente
+✅  Solo da acceso a personas de confianza
+
+╔══════════════════════════════════════════════════════════╗
+║  📞 AYUDA                                                ║
+╚══════════════════════════════════════════════════════════╝
+
+📄 Documentación completa: README_ADMIN_PANEL.md
+🐛 Problemas: Revisa consola del navegador (F12)
+
+╔══════════════════════════════════════════════════════════╗
+║  📁 ARCHIVOS DEL PANEL                                   ║
+╚══════════════════════════════════════════════════════════╝
+
+admin-panel.html       → Abrir este archivo en navegador
+admin-panel.css        → Estilos (puedes personalizar)
+admin-panel.js         → Lógica del panel
+firebase-config.js     → ⚠️ COMPLETAR CREDENCIALES AQUÍ
+README_ADMIN_PANEL.md  → Documentación completa
+INICIO_RAPIDO.txt      → Este archivo
+
+╔══════════════════════════════════════════════════════════╗
+║  ✅ CHECKLIST DE CONFIGURACIÓN                          ║
+╚══════════════════════════════════════════════════════════╝
+
+[ ] Obtuve credenciales de Firebase Console
+[ ] Completé firebase-config.js con apiKey, messagingSenderId, appId
+[ ] Creé cuenta de administrador en Firebase Authentication
+[ ] Probé hacer login en el panel
+[ ] Veo las licencias cargadas correctamente
+
+╔══════════════════════════════════════════════════════════╗
+║  🎉 ¡LISTO PARA USAR!                                    ║
+╚══════════════════════════════════════════════════════════╝
+
+Doble click en admin-panel.html y comienza a gestionar
+tus licencias de BIMS VANILLA.

@@ -1,0 +1,49 @@
+╔══════════════════════════════════════════════════════════════╗
+║  COPIAR Y PEGAR ESTOS 3 COMANDOS EN POWERSHELL              ║
+╚══════════════════════════════════════════════════════════════╝
+
+COMANDO 1: Navegar a la carpeta
+────────────────────────────────────────────────────────────────
+cd "D:\repos\claude RevitExtensions-main - FIREBASE AUTHENTICATION - yo\AdminPanel"
+
+
+COMANDO 2: Login a Firebase (se abrirá navegador)
+────────────────────────────────────────────────────────────────
+firebase login
+
+
+COMANDO 3: Hacer el Deploy
+────────────────────────────────────────────────────────────────
+firebase deploy --only hosting
+
+
+╔══════════════════════════════════════════════════════════════╗
+║  RESULTADO ESPERADO                                          ║
+╚══════════════════════════════════════════════════════════════╝
+
+Al finalizar verás:
+
+✔  Deploy complete!
+
+Hosting URL: https://bims-8d507.web.app
+
+Esa es tu URL pública del panel!
+
+
+╔══════════════════════════════════════════════════════════════╗
+║  QUÉ HACE CADA COMANDO                                       ║
+╚══════════════════════════════════════════════════════════════╝
+
+1. cd "..."          → Ir a la carpeta del panel
+2. firebase login    → Autenticarse con Google (abre navegador)
+3. firebase deploy   → Subir el panel a la nube
+
+
+╔══════════════════════════════════════════════════════════════╗
+║  IMPORTANTE                                                   ║
+╚══════════════════════════════════════════════════════════════╝
+
+- El comando 2 abrirá tu navegador
+- Selecciona tu cuenta de Google (alejoszapatasergio@gmail.com)
+- Permite el acceso a Firebase
+- Vuelve a PowerShell para el comando 3

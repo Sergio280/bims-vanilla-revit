@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<Obfuscator>
+  <!-- Rutas -->
+  <Var name="InPath" value="." />
+  <Var name="OutPath" value=".\Obfuscator_Output" />
+
+  <!-- ⭐ CONFIGURACIÓN HÍBRIDA (ofuscación agresiva PERO funcional) ⭐ -->
+  <Var name="KeepPublicApi" value="true" />           <!-- ✅ Preservar API pública (necesario para Revit) -->
+  <Var name="HidePrivateApi" value="true" />          <!-- Oculta API privada -->
+  <Var name="RenameFields" value="true" />            <!-- Renombra campos privados -->
+  <Var name="RenameProperties" value="false" />       <!-- ⚠️ NO renombrar propiedades públicas -->
+  <Var name="RenameEvents" value="true" />            <!-- Renombra eventos -->
+  <Var name="ReuseNames" value="true" />              <!-- Reutiliza nombres -->
+  <Var name="UseUnicodeNames" value="true" />         <!-- ⭐ Nombres Unicode para privados -->
+  <Var name="SuppressIldasm" value="true" />          <!-- Anti-ILDASM -->
+  <Var name="EncryptStrings" value="true" />          <!-- Encripta strings -->
+  <Var name="HideStrings" value="true" />             <!-- Oculta strings -->
+
+  <!-- Módulo -->
+  <Module file="$(InPath)\ClosestGridsAddinVANILLA.dll" />
+
+  <!-- Resolución de dependencias -->
+  <AssemblySearchPath path="$(InPath)" />
+  <AssemblySearchPath path="C:\Program Files\Autodesk\Revit 2025\" />
+
+  <!-- ⚠️ SIN exclusiones adicionales - KeepPublicApi hace el trabajo ⚠️ -->
+
+  <!-- Tipos del compilador (obligatorio) -->
+  <SkipType name="^&lt;&gt;f__AnonymousType.*$" />
+  <SkipAttribute name="System.Runtime.CompilerServices.CompilerGeneratedAttribute" />
+  <SkipAttribute name="System.Runtime.Serialization.DataContractAttribute" />
+  <SkipAttribute name="System.Runtime.Serialization.DataMemberAttribute" />
+  <SkipAttribute name="System.Text.Json.Serialization.JsonPropertyNameAttribute" />
+
+</Obfuscator>

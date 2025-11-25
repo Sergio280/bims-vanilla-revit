@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>BIMS</Name>
+    <Assembly>BIMS-VANILLA\ClosestGridsAddinVANILLA.dll</Assembly>
+    <FullClassName>ClosestGridsAddinVANILLA.Application</FullClassName>
+    <ClientId>8a5fcc5e-4b6b-4d92-bc99-ea8e70ce0cf5</ClientId>
+    <VendorId>SGAZ - +51989455558</VendorId>
+    <VendorDescription>BIMS</VendorDescription>
+  </AddIn>
+</RevitAddIns>

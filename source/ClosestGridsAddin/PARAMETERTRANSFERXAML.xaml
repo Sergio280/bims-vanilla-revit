@@ -1,0 +1,71 @@
+<Window x:Class="ClosestGridsAddinVANILLA.PARAMETERTRANSFERXAML"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:ClosestGridsAddinVANILLA"
+        mc:Ignorable="d"
+        Title="Transferencia de Parámetros" Height="250" Width="550"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Título -->
+        <TextBlock Grid.Row="0" Text="Transferir Valores entre Parámetros" 
+                   FontSize="16" FontWeight="Bold" 
+                   Margin="0,0,0,20" HorizontalAlignment="Center"/>
+
+        <!-- Parámetro Origen -->
+        <StackPanel Grid.Row="1" Margin="0,0,0,15">
+            <Label Content="Parámetro Origen:" FontWeight="SemiBold"/>
+            <TextBox x:Name="parametroOrigen" Height="30" 
+                     ToolTip="Nombre del parámetro desde el cual se copiarán los valores"/>
+            <TextBlock Text="Ejemplo: Comments, Mark, Description, etc." 
+                       Foreground="Gray" FontSize="10" Margin="0,3,0,0"/>
+        </StackPanel>
+
+        <!-- Parámetro Destino -->
+        <StackPanel Grid.Row="2" Margin="0,0,0,20">
+            <Label Content="Parámetro Destino:" FontWeight="SemiBold"/>
+            <TextBox x:Name="parametroDestino" Height="30"
+                     ToolTip="Nombre del parámetro al cual se copiarán los valores"/>
+            <TextBlock Text="Los valores se sobrescribirán en este parámetro" 
+                       Foreground="Gray" FontSize="10" Margin="0,3,0,0"/>
+        </StackPanel>
+
+        <!-- Información -->
+        <Border Grid.Row="3" Background="#FFF3E5" 
+                BorderBrush="#FFB74D" BorderThickness="1" 
+                Padding="10" Margin="0,0,0,20">
+            <StackPanel>
+                <TextBlock Text="ℹ️ Información:" FontWeight="Bold" Margin="0,0,0,5"/>
+                <TextBlock TextWrapping="Wrap">
+                    • Si no hay elementos seleccionados, se procesará todo el modelo<LineBreak/>
+                    • Los parámetros deben ser del mismo tipo (texto, número, etc.)<LineBreak/>
+                    • Los valores existentes serán sobrescritos
+                </TextBlock>
+            </StackPanel>
+        </Border>
+
+        <!-- Botones -->
+        <StackPanel Grid.Row="4" Orientation="Horizontal" 
+                    HorizontalAlignment="Center">
+            <Button Content="Aceptar" Width="120" Height="35" 
+                    Margin="0,0,15,0" Click="Button_Click"
+                    IsDefault="True"
+                    Background="#4CAF50" Foreground="White"
+                    FontWeight="SemiBold"/>
+            <Button Content="Cancelar" Width="120" Height="35" 
+                    Margin="15,0,0,0" IsCancel="True"
+                    Background="#F44336" Foreground="White"
+                    FontWeight="SemiBold"/>
+        </StackPanel>
+    </Grid>
+</Window>

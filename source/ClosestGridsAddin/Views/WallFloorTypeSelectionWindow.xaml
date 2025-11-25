@@ -1,0 +1,138 @@
+<Window x:Class="ClosestGridsAddinVANILLA.Views.WallFloorTypeSelectionWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Selección de Tipos - Auto-Convert"
+        Height="350" Width="550"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        Background="#F5F5F5">
+
+    <Window.Resources>
+        <Style TargetType="GroupBox">
+            <Setter Property="Margin" Value="10"/>
+            <Setter Property="Padding" Value="10"/>
+            <Setter Property="BorderBrush" Value="#CCCCCC"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+
+        <Style TargetType="ComboBox">
+            <Setter Property="Margin" Value="0,5,0,0"/>
+            <Setter Property="Padding" Value="5"/>
+            <Setter Property="Height" Value="30"/>
+        </Style>
+
+        <Style TargetType="Button">
+            <Setter Property="Padding" Value="15,8"/>
+            <Setter Property="Margin" Value="5"/>
+            <Setter Property="MinWidth" Value="100"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+
+        <Style x:Key="AceptarButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="#4CAF50"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                CornerRadius="3"
+                                BorderThickness="0">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#45a049"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="CancelarButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="#f44336"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                CornerRadius="3"
+                                BorderThickness="0">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#da190b"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <TextBlock Grid.Row="0"
+                   Text="Seleccione los tipos de elementos para la conversión"
+                   FontSize="14"
+                   FontWeight="SemiBold"
+                   Foreground="#333333"
+                   Margin="0,0,0,15"
+                   TextWrapping="Wrap"/>
+
+        <!-- Content -->
+        <StackPanel Grid.Row="1">
+            <!-- Wall Type Selection -->
+            <GroupBox Header="Tipo de Muro">
+                <StackPanel>
+                    <TextBlock Text="Los DirectShapes verticales se convertirán a muros con este tipo:"
+                               TextWrapping="Wrap"
+                               Foreground="#666666"
+                               FontSize="11"
+                               Margin="0,0,0,5"/>
+                    <ComboBox x:Name="cmbWallType"
+                              DisplayMemberPath="Name"
+                              SelectedIndex="0"/>
+                </StackPanel>
+            </GroupBox>
+
+            <!-- Floor Type Selection -->
+            <GroupBox Header="Tipo de Suelo/Losa">
+                <StackPanel>
+                    <TextBlock Text="Los DirectShapes horizontales se convertirán a suelos con este tipo:"
+                               TextWrapping="Wrap"
+                               Foreground="#666666"
+                               FontSize="11"
+                               Margin="0,0,0,5"/>
+                    <ComboBox x:Name="cmbFloorType"
+                              DisplayMemberPath="Name"
+                              SelectedIndex="0"/>
+                </StackPanel>
+            </GroupBox>
+        </StackPanel>
+
+        <!-- Buttons -->
+        <StackPanel Grid.Row="2"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,15,0,0">
+            <Button Content="Cancelar"
+                    Click="btnCancelar_Click"
+                    Style="{StaticResource CancelarButton}"/>
+            <Button Content="Aceptar"
+                    Click="btnAceptar_Click"
+                    Style="{StaticResource AceptarButton}"/>
+        </StackPanel>
+    </Grid>
+</Window>

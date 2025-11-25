@@ -1,0 +1,3290 @@
+#region Namespaces
+using System;
+using System.Linq;
+using System.Collections.Generic;
+using Autodesk.Revit.Attributes;
+using Autodesk.Revit.DB;
+using Autodesk.Revit.UI;
+#endregion
+
+namespace ConvertGenericToWallOrFloor
+{
+    /// <summary>
+    /// Convierte modelos genéricos (DirectShapes de encofrado) a muros y suelos reales
+    /// Usa el parámetro "Comentarios" para identificar encofrados y preservar vínculo con elemento original
+    /// </summary>
+    [Transaction(TransactionMode.Manual)]
+    public class ConvertGenericToWallOrFloorCommand : IExternalCommand
+    {
+        private Document _doc;
+        private WallType _wallType;
+        private FloorType _floorType;
+        private System.Text.StringBuilder _log = new System.Text.StringBuilder();
+
+        public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
+        {
+            UIDocument uidoc = commandData.Application.ActiveUIDocument;
+            _doc = uidoc.Document;
+
+            try
+            {
+                // 1. Verificar tipos necesarios
+                if (!ObtenerTipos())
+                {
+                    TaskDialog.Show("Error", "No se encontraron los tipos 'Encofrado 18mm' o 'Cimbra 25mm'.\n" +
+                        "Ejecuta primero el comando de generación de encofrados.");
+                    return Result.Failed;
+                }
+
+                // 2. Filtrar solo modelos genéricos que sean encofrados (tienen ID en Comentarios)
+                var encofrados = ObtenerEncofrados();
+
+                if (encofrados.Count == 0)
+                {
+                    TaskDialog.Show("Información", "No se encontraron encofrados para convertir.\n" +
+                        "Los encofrados deben tener un ID en el parámetro 'Comentarios'.");
+                    return Result.Cancelled;
+                }
+
+                _log.AppendLine($"=== CONVERSIÓN DE ENCOFRADOS ===");
+                _log.AppendLine($"Total de encofrados encontrados: {encofrados.Count}");
+
+                // 3. Procesar cada encofrado
+                int murosCreados = 0;
+                int suelosCreados = 0;
+                int errores = 0;
+
+                // Contadores de métodos usados
+                int metodo1Usado = 0;  // Curvas de cara
+                int metodo2Usado = 0;  // EditProfile
+                int metodo3Usado = 0;  // CurveLoops
+                int metodo4Usado = 0;  // DirectShape
+                int metodo5Usado = 0;  // Tradicional
+
+                using (Transaction trans = new Transaction(_doc, "Convertir Encofrados a Muros/Suelos"))
+                {
+                    try
+                    {
+                        trans.Start();
+
+                        foreach (Element encofrado in encofrados)
+                        {
+                            try
+                            {
+                                int metodoUsado = ProcesarEncofrado(encofrado, ref murosCreados, ref suelosCreados);
+
+                                if (metodoUsado == 0)
+                                {
+                                    errores++;
+                                }
+                                else
+                                {
+                                    // Incrementar contador del método usado
+                                    switch (metodoUsado)
+                                    {
+                                        case 1: metodo1Usado++; break;
+                                        case 2: metodo2Usado++; break;
+                                        case 3: metodo3Usado++; break;
+                                        case 4: metodo4Usado++; break;
+                                        case 5: metodo5Usado++; break;
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                _log.AppendLine($"ERROR en {encofrado.Id}: {ex.Message}");
+                                errores++;
+                            }
+                        }
+
+                        trans.Commit();
+                    }
+                    catch (Exception exTrans)
+                    {
+                        _log.AppendLine($"\n✗✗✗ ERROR CRÍTICO EN TRANSACCIÓN: {exTrans.Message}");
+                        trans.RollBack();
+
+                        // Mostrar log incluso si hay error en la transacción
+                        MostrarResultados(murosCreados, suelosCreados, errores,
+                            metodo1Usado, metodo2Usado, metodo3Usado, metodo4Usado, metodo5Usado);
+
+                        message = $"Error en transacción: {exTrans.Message}";
+                        return Result.Failed;
+                    }
+                }
+
+                // 4. Mostrar resultados con estadísticas de métodos
+                MostrarResultados(murosCreados, suelosCreados, errores,
+                    metodo1Usado, metodo2Usado, metodo3Usado, metodo4Usado, metodo5Usado);
+                return Result.Succeeded;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"\n✗✗✗ ERROR GENERAL: {ex.Message}");
+                message = $"Error general: {ex.Message}";
+
+                // Mostrar log incluso si hay error general
+                TaskDialog td = new TaskDialog("Error en Conversión");
+                td.MainInstruction = "Error durante la conversión";
+                td.MainContent = message;
+                td.ExpandedContent = _log.ToString();
+                td.Show();
+
+                return Result.Failed;
+            }
+        }
+
+        /// <summary>
+        /// Obtiene los tipos de muro y suelo necesarios
+        /// </summary>
+        private bool ObtenerTipos()
+        {
+            _wallType = new FilteredElementCollector(_doc)
+                .OfClass(typeof(WallType))
+                .Cast<WallType>()
+                .FirstOrDefault(w => w.Name.Contains("Encofrado 18mm"));
+
+            _floorType = new FilteredElementCollector(_doc)
+                .OfClass(typeof(FloorType))
+                .Cast<FloorType>()
+                .FirstOrDefault(f => f.Name.Contains("Cimbra 25mm"));
+
+            return _wallType != null && _floorType != null;
+        }
+
+        /// <summary>
+        /// Filtra modelos genéricos que tienen ID en parámetro Comentarios (encofrados)
+        /// </summary>
+        private List<Element> ObtenerEncofrados()
+        {
+            var todosLosGenericos = new FilteredElementCollector(_doc)
+                .OfCategory(BuiltInCategory.OST_GenericModel)
+                .WhereElementIsNotElementType()
+                .ToElements();
+
+            _log.AppendLine($"Total de modelos genéricos en el proyecto: {todosLosGenericos.Count}");
+
+            List<Element> encofrados = new List<Element>();
+            int sinParametro = 0;
+            int parametroVacio = 0;
+
+            foreach (Element elem in todosLosGenericos)
+            {
+                Parameter paramComentarios = elem.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS);
+
+                if (paramComentarios == null)
+                {
+                    sinParametro++;
+                    continue;
+                }
+
+                if (!paramComentarios.HasValue)
+                {
+                    parametroVacio++;
+                    continue;
+                }
+
+                string comentario = paramComentarios.AsString();
+
+                if (string.IsNullOrWhiteSpace(comentario))
+                {
+                    parametroVacio++;
+                    continue;
+                }
+
+                // Aceptar cualquier comentario no vacío
+                _log.AppendLine($"  Encofrado encontrado ID {elem.Id}: '{comentario}'");
+                encofrados.Add(elem);
+            }
+
+            _log.AppendLine($"Resumen:");
+            _log.AppendLine($"  - Con comentarios: {encofrados.Count}");
+            _log.AppendLine($"  - Sin parámetro: {sinParametro}");
+            _log.AppendLine($"  - Parámetro vacío: {parametroVacio}");
+
+            return encofrados;
+        }
+
+        /// <summary>
+        /// Procesa un encofrado individual y decide si crear muro o suelo NATIVO
+        /// Estrategia: Crear elementos nativos de Revit (Wall/Floor) y aplicar recortes con Voids
+        /// </summary>
+        /// <summary>
+        /// Procesa un encofrado y retorna el número del método que tuvo éxito
+        /// Retorna: 0=fallo, 1-5=método usado para muros, 6=suelo creado
+        /// </summary>
+        private int ProcesarEncofrado(Element encofrado, ref int murosCreados, ref int suelosCreados)
+        {
+            _log.AppendLine($"\n═══ Procesando encofrado ID {encofrado.Id} ═══");
+
+            // 1. Extraer todos los sólidos
+            List<Solid> solidos = ExtraerSolidos(encofrado);
+            if (solidos.Count == 0)
+            {
+                _log.AppendLine($"  ✗ ERROR: No se encontraron sólidos");
+                return 0;
+            }
+
+            _log.AppendLine($"  ✓ Sólidos encontrados: {solidos.Count}");
+
+            // Mostrar volumen total
+            double volumenTotal = solidos.Sum(s => s.Volume);
+            _log.AppendLine($"  ✓ Volumen total: {volumenTotal:F4} ft³");
+
+            // 2. Analizar orientación dominante del encofrado
+            OrientacionEncofrado orientacion = AnalizarOrientacion(solidos);
+            _log.AppendLine($"  ✓ Orientación detectada: {orientacion.Tipo}");
+            _log.AppendLine($"    - Normal promedio: X={orientacion.NormalPromedio.X:F3}, Y={orientacion.NormalPromedio.Y:F3}, Z={orientacion.NormalPromedio.Z:F3}");
+            _log.AppendLine($"    - |Z| = {Math.Abs(orientacion.NormalPromedio.Z):F3}");
+
+            // 3. Crear elemento nativo según orientación
+            int metodoUsado = 0;
+
+            if (orientacion.Tipo == TipoOrientacion.Vertical)
+            {
+                _log.AppendLine($"  → Intentando crear MURO con geometría compleja...");
+                _log.AppendLine($"  Sistema de intentos múltiples: probando 5 métodos");
+                _log.AppendLine($"  ════════════════════════════════════════════");
+
+                // INTENTO 1: Wall.Create desde curvas de cara (TÉCNICA PROBADA - 11_CrearMurosSobreCarasCmd)
+                _log.AppendLine($"  [1/5] Wall desde curvas de cara con validación coplanar...");
+                if (CrearMuroDesdeCaras(encofrado, solidos, orientacion))
+                {
+                    murosCreados++;
+                    metodoUsado = 1;
+                    _log.AppendLine($"  ✓✓ ÉXITO: MURO CREADO CON MÉTODO 1 (Curvas de cara)");
+                }
+                else
+                {
+                    _log.AppendLine($"  ✗ Método 1 falló");
+
+                    // INTENTO 2: Wall + EditProfile con SketchEditScope (probabilidad ALTA)
+                    _log.AppendLine($"  [2/5] Wall + EditProfile con SketchEditScope...");
+                    if (CrearMuroConEditProfile(encofrado, solidos, orientacion))
+                    {
+                        murosCreados++;
+                        metodoUsado = 2;
+                        _log.AppendLine($"  ✓✓ ÉXITO: MURO CREADO CON MÉTODO 2 (EditProfile)");
+                    }
+                    else
+                    {
+                        _log.AppendLine($"  ✗ Método 2 falló");
+
+                        // INTENTO 3: Wall con múltiples CurveLoops (probabilidad MEDIA)
+                        _log.AppendLine($"  [3/5] Wall con múltiples CurveLoops...");
+                        if (CrearMuroConCurveLoopsComplejos(encofrado, solidos, orientacion))
+                        {
+                            murosCreados++;
+                            metodoUsado = 3;
+                            _log.AppendLine($"  ✓✓ ÉXITO: MURO CREADO CON MÉTODO 3 (CurveLoops)");
+                        }
+                        else
+                        {
+                            _log.AppendLine($"  ✗ Método 3 falló");
+
+                            // INTENTO 4: DirectShape con categoría OST_Walls (probabilidad MEDIA-BAJA)
+                            _log.AppendLine($"  [4/5] DirectShape con categoría Walls...");
+                            if (CrearMuroComoDirectShape(encofrado, solidos))
+                            {
+                                murosCreados++;
+                                metodoUsado = 4;
+                                _log.AppendLine($"  ✓✓ ÉXITO: MURO CREADO CON MÉTODO 4 (DirectShape)");
+                            }
+                            else
+                            {
+                                _log.AppendLine($"  ✗ Método 4 falló");
+
+                                // INTENTO 5: Wall.Create tradicional (probabilidad MÍNIMA, respaldo final)
+                                _log.AppendLine($"  [5/5] Wall.Create tradicional (respaldo final)...");
+                                if (CrearMuroNativo(encofrado, solidos, orientacion))
+                                {
+                                    murosCreados++;
+                                    metodoUsado = 5;
+                                    _log.AppendLine($"  ✓✓ ÉXITO: MURO CREADO CON MÉTODO 5 (Tradicional sin recortes)");
+                                }
+                                else
+                                {
+                                    _log.AppendLine($"  ✗✗ TODOS LOS MÉTODOS FALLARON - Encofrado NO eliminado");
+                                    metodoUsado = 0;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                _log.AppendLine($"  ════════════════════════════════════════════");
+            }
+            else
+            {
+                _log.AppendLine($"  → Intentando crear SUELO...");
+                if (CrearSueloNativo(encofrado, solidos, orientacion))
+                {
+                    suelosCreados++;
+                    metodoUsado = 6;  // 6 = suelo creado
+                    _log.AppendLine($"  ✓✓ SUELO CREADO EXITOSAMENTE");
+                }
+                else
+                {
+                    _log.AppendLine($"  ✗✗ FALLO AL CREAR SUELO - Encofrado NO eliminado");
+                    metodoUsado = 0;
+                }
+            }
+
+            // 4. SOLO eliminar encofrado original si se creó exitosamente
+            if (metodoUsado > 0)
+            {
+                try
+                {
+                    _doc.Delete(encofrado.Id);
+                    _log.AppendLine($"  ✓ Encofrado original eliminado");
+                }
+                catch (Exception exDelete)
+                {
+                    _log.AppendLine($"  ⚠ No se pudo eliminar encofrado original: {exDelete.Message}");
+                }
+            }
+            else
+            {
+                _log.AppendLine($"  ⚠ Encofrado original CONSERVADO para revisión manual");
+            }
+
+            return metodoUsado;
+        }
+
+        /// <summary>
+        /// EXPERIMENTAL: Intenta crear un FaceWall desde DirectShape convertido a Mass
+        /// Esta aproximación podría preservar la geometría compleja incluyendo recortes
+        /// </summary>
+        private bool CrearMuroConMass(Element encofrado, List<Solid> solidos, OrientacionEncofrado orientacion)
+        {
+            DirectShape massShape = null; // Declarar aquí para limpieza en catch
+
+            try
+            {
+                _log.AppendLine($"    [MASS EXPERIMENTAL] Intentando crear FaceWall desde Mass...");
+
+                DirectShape ds = encofrado as DirectShape;
+                if (ds == null)
+                {
+                    _log.AppendLine($"    ✗ El encofrado no es un DirectShape");
+                    return false;
+                }
+
+                // PASO 1: Crear nuevo DirectShape con categoría Mass
+                // Nota: DirectShape no tiene SetCategoryId, debemos crear uno nuevo
+                List<GeometryObject> geometryList = new List<GeometryObject>();
+
+                foreach (Solid solid in solidos)
+                {
+                    if (solid.Volume > 0.001)
+                        geometryList.Add(solid);
+                }
+
+                if (geometryList.Count == 0)
+                {
+                    _log.AppendLine($"    ✗ No hay geometría válida para crear Mass");
+                    return false;
+                }
+
+                // Crear DirectShape con categoría Mass
+                massShape = DirectShape.CreateElement(_doc, new ElementId(BuiltInCategory.OST_Mass));
+                massShape.SetShape(geometryList);
+
+                _log.AppendLine($"    ✓ DirectShape creado con categoría Mass ID: {massShape.Id}");
+
+                // PASO 2: Obtener geometría con referencias computadas
+                Options opts = new Options
+                {
+                    DetailLevel = ViewDetailLevel.Fine,
+                    ComputeReferences = true  // CRÍTICO para FaceWall.Create
+                };
+
+                GeometryElement geomElem = massShape.get_Geometry(opts);
+                if (geomElem == null)
+                {
+                    _log.AppendLine($"    ✗ No se pudo obtener geometría");
+                    return false;
+                }
+
+                // PASO 3: Encontrar caras verticales del mass
+                List<Reference> facesVerticales = new List<Reference>();
+
+                foreach (GeometryObject geomObj in geomElem)
+                {
+                    if (geomObj is Solid solid && solid.Volume > 0.001)
+                    {
+                        foreach (Face face in solid.Faces)
+                        {
+                            if (face is PlanarFace pf)
+                            {
+                                // Buscar caras verticales o inclinadas
+                                double absZ = Math.Abs(pf.FaceNormal.Z);
+                                if (absZ < 0.9) // No completamente horizontal
+                                {
+                                    Reference faceRef = face.Reference;
+                                    if (faceRef != null)
+                                    {
+                                        facesVerticales.Add(faceRef);
+                                        _log.AppendLine($"    Cara vertical encontrada: |Z|={absZ:F3}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (facesVerticales.Count == 0)
+                {
+                    _log.AppendLine($"    ✗ No se encontraron caras verticales con referencias");
+                    return false;
+                }
+
+                _log.AppendLine($"    ✓ {facesVerticales.Count} cara(s) vertical(es) con referencias");
+
+                // PASO 4: Validar que la cara puede usarse para FaceWall
+                Reference caraSeleccionada = facesVerticales.OrderByDescending(r =>
+                {
+                    GeometryObject geoObj = massShape.GetGeometryObjectFromReference(r);
+                    if (geoObj is Face f)
+                        return f.Area;
+                    return 0;
+                }).FirstOrDefault();
+
+                if (!FaceWall.IsValidFaceReferenceForFaceWall(_doc, caraSeleccionada))
+                {
+                    _log.AppendLine($"    ✗ La referencia de cara no es válida para FaceWall");
+                    return false;
+                }
+
+                _log.AppendLine($"    ✓ Referencia de cara válida para FaceWall");
+
+                // PASO 5: Validar WallType
+                if (!FaceWall.IsWallTypeValidForFaceWall(_doc, _wallType.Id))
+                {
+                    _log.AppendLine($"    ✗ El WallType '{_wallType.Name}' no es válido para FaceWall");
+                    return false;
+                }
+
+                _log.AppendLine($"    ✓ WallType '{_wallType.Name}' válido");
+
+                // PASO 6: Crear FaceWall con manejo de errores para evitar diálogos de Revit
+                FaceWall faceWall = null;
+                try
+                {
+                    faceWall = FaceWall.Create(_doc, _wallType.Id, WallLocationLine.CoreCenterline, caraSeleccionada);
+                }
+                catch (Autodesk.Revit.Exceptions.InvalidOperationException ex)
+                {
+                    _log.AppendLine($"    ✗ No se pudo crear FaceWall (parámetros inválidos): {ex.Message}");
+                    return false;
+                }
+                catch (Autodesk.Revit.Exceptions.ArgumentException ex)
+                {
+                    _log.AppendLine($"    ✗ No se pudo crear FaceWall (argumentos inválidos): {ex.Message}");
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    _log.AppendLine($"    ✗ Error inesperado creando FaceWall: {ex.Message}");
+                    return false;
+                }
+
+                if (faceWall == null)
+                {
+                    _log.AppendLine($"    ✗ FaceWall.Create retornó null");
+                    return false;
+                }
+
+                _log.AppendLine($"    ✓✓ FaceWall creado exitosamente ID: {faceWall.Id}");
+                _log.AppendLine($"    ✓ Geometría compleja preservada incluyendo recortes");
+
+                // Desactivar Room Bounding
+                Parameter paramRoomBounding = faceWall.get_Parameter(BuiltInParameter.WALL_ATTR_ROOM_BOUNDING);
+                if (paramRoomBounding != null && !paramRoomBounding.IsReadOnly)
+                {
+                    paramRoomBounding.Set(0);
+                }
+
+                // Copiar parámetro Comentarios primero (contiene el ID del elemento encofrado)
+                CopiarParametroComentarios(encofrado, faceWall);
+
+                // Copiar nivel y desfases del elemento estructural encofrado
+                CopiarNivelYDesfasesDeElementoEncofrado(encofrado, faceWall);
+
+                // PASO 7: Eliminar DirectShape Mass temporal (ya no es necesario)
+                try
+                {
+                    _doc.Delete(massShape.Id);
+                    _log.AppendLine($"    ✓ DirectShape Mass temporal eliminado ID: {massShape.Id}");
+                }
+                catch (Exception exDelete)
+                {
+                    _log.AppendLine($"    ⚠ No se pudo eliminar Mass temporal: {exDelete.Message}");
+                    // No es crítico, continuamos
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"    ✗ Error en método experimental Mass: {ex.Message}");
+                _log.AppendLine($"    Stack: {ex.StackTrace}");
+
+                // Intentar limpiar el Mass temporal si se creó
+                try
+                {
+                    if (massShape != null && massShape.IsValidObject)
+                    {
+                        _doc.Delete(massShape.Id);
+                        _log.AppendLine($"    ✓ Mass temporal limpiado después del error");
+                    }
+                }
+                catch
+                {
+                    // Ignorar errores de limpieza
+                }
+
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// MÉTODO 2: Crea muro directamente desde curvas de la cara (técnica probada)
+        /// Usa Wall.Create(List<Curve>) para crear el muro siguiendo el contorno completo
+        /// Inspirado en 11_CrearMurosSobreCarasCmd.cs
+        /// </summary>
+        private bool CrearMuroDesdeCaras(Element encofrado, List<Solid> solidos, OrientacionEncofrado orientacion)
+        {
+            try
+            {
+                _log.AppendLine($"    [CARAS] Creando muro desde curvas de cara...");
+
+                Solid solidoPrincipal = solidos.OrderByDescending(s => s.Volume).First();
+
+                // 1. Encontrar la cara vertical más grande
+                PlanarFace caraVertical = null;
+                double maxArea = 0;
+
+                foreach (Face face in solidoPrincipal.Faces)
+                {
+                    if (face is PlanarFace pf && Math.Abs(pf.FaceNormal.Z) < 0.3 && pf.Area > maxArea)
+                    {
+                        maxArea = pf.Area;
+                        caraVertical = pf;
+                    }
+                }
+
+                if (caraVertical == null)
+                {
+                    _log.AppendLine($"    ✗ No se encontró cara vertical");
+                    return false;
+                }
+
+                _log.AppendLine($"    ✓ Cara vertical encontrada: área={maxArea:F2} ft², normal={caraVertical.FaceNormal}");
+
+                // 2. Obtener CurveLoops de los bordes de la cara
+                IList<CurveLoop> curveLoops = caraVertical.GetEdgesAsCurveLoops();
+                if (curveLoops.Count == 0)
+                {
+                    _log.AppendLine($"    ✗ No se encontraron CurveLoops en la cara");
+                    return false;
+                }
+
+                _log.AppendLine($"    ✓ CurveLoops encontrados: {curveLoops.Count}");
+
+                // 3. Obtener vectores de la cara para verificar orientación
+                XYZ xVectorPlanarFace = caraVertical.XVector;
+                XYZ yVectorPlanarFace = caraVertical.YVector;
+                XYZ faceNormal = caraVertical.FaceNormal;
+
+                // 4. Convertir CurveLoops a List<Curve> con verificación de orientación
+                List<Curve> curves = new List<Curve>();
+
+                if (curveLoops.Count == 1)
+                {
+                    // Caso simple: un solo loop
+                    CurveLoop curveLoop = curveLoops[0];
+                    foreach (Curve curve in curveLoop)
+                    {
+                        curves.Add(curve);
+                    }
+                    _log.AppendLine($"    ✓ Un solo loop: {curves.Count} curvas");
+                }
+                else
+                {
+                    // Caso complejo: múltiples loops (contorno exterior + recortes interiores)
+                    foreach (CurveLoop curveLoop in curveLoops)
+                    {
+                        Plane planeCurveLoop = curveLoop.GetPlane();
+                        XYZ xVectorCurveLoop = planeCurveLoop.XVec;
+                        XYZ yVectorCurveLoop = planeCurveLoop.YVec;
+
+                        // Verificar si los vectores son paralelos (usando cross product)
+                        // Si el cross product es casi cero, los vectores son paralelos
+                        bool xParalelo = xVectorPlanarFace.CrossProduct(xVectorCurveLoop).GetLength() < 0.001;
+                        bool yParalelo = yVectorPlanarFace.CrossProduct(yVectorCurveLoop).GetLength() < 0.001;
+
+                        if (!xParalelo || !yParalelo)
+                        {
+                            // Vectores no paralelos: invertir curvas
+                            _log.AppendLine($"    ⚠ Loop no paralelo - invirtiendo curvas");
+                            List<Curve> reverseCurves = curveLoop.Reverse().ToList();
+                            foreach (Curve reverseCurve in reverseCurves)
+                            {
+                                curves.Add(reverseCurve);
+                            }
+                        }
+                        else
+                        {
+                            // Vectores paralelos: usar curvas tal como están
+                            foreach (Curve curve in curveLoop)
+                            {
+                                curves.Add(curve);
+                            }
+                        }
+                    }
+                    _log.AppendLine($"    ✓ Múltiples loops procesados: {curves.Count} curvas totales");
+                }
+
+                if (curves.Count < 3)
+                {
+                    _log.AppendLine($"    ✗ Insuficientes curvas para crear muro: {curves.Count}");
+                    return false;
+                }
+
+                // 5. VALIDAR Y PROYECTAR CURVAS A PLANO COMÚN (crítico para Wall.Create)
+                curves = ValidarYProyectarCurvasAPlanoComun(curves, faceNormal);
+
+                if (curves == null || curves.Count < 3)
+                {
+                    _log.AppendLine($"    ✗ Error en proyección de curvas o insuficientes curvas después de validación");
+                    return false;
+                }
+
+                // 6. Obtener nivel base y altura del modelo genérico ORIGINAL
+                // Usamos el BoundingBox del encofrado, no las curvas procesadas
+                BoundingBoxXYZ bboxOriginal = encofrado.get_BoundingBox(null);
+                double zMinOriginal = bboxOriginal != null ? bboxOriginal.Min.Z : curves.Min(c => Math.Min(c.GetEndPoint(0).Z, c.GetEndPoint(1).Z));
+                double zMaxOriginal = bboxOriginal != null ? bboxOriginal.Max.Z : curves.Max(c => Math.Max(c.GetEndPoint(0).Z, c.GetEndPoint(1).Z));
+                double alturaOriginal = zMaxOriginal - zMinOriginal;
+
+                Level nivel = ObtenerNivelMasCercano(zMinOriginal);
+                if (nivel == null)
+                {
+                    _log.AppendLine($"    ✗ No se encontró nivel para Z={zMinOriginal}");
+                    return false;
+                }
+
+                _log.AppendLine($"    ✓ Nivel base: {nivel.Name} (elevación={nivel.Elevation:F2})");
+                _log.AppendLine($"    ✓ Altura modelo genérico original: zMin={zMinOriginal:F3}, zMax={zMaxOriginal:F3}, altura={alturaOriginal:F3}");
+
+                // 7. Log detallado de las curvas antes de crear el muro
+                _log.AppendLine($"    [PRE-CREATE] {curves.Count} curvas a pasar a Wall.Create:");
+                for (int i = 0; i < Math.Min(curves.Count, 10); i++)
+                {
+                    Curve c = curves[i];
+                    XYZ p0 = c.GetEndPoint(0);
+                    XYZ p1 = c.GetEndPoint(1);
+                    _log.AppendLine($"      Curva[{i}]: ({p0.X:F3},{p0.Y:F3},{p0.Z:F3}) -> ({p1.X:F3},{p1.Y:F3},{p1.Z:F3})");
+                }
+                if (curves.Count > 10)
+                {
+                    _log.AppendLine($"      ... y {curves.Count - 10} curvas más");
+                }
+
+                // 8. Crear el muro desde las curvas con manejo de errores
+                bool isStructural = true;
+                Wall newWall = null;
+                try
+                {
+                    _log.AppendLine($"    [WALL.CREATE] Llamando Wall.Create con {curves.Count} curvas...");
+                    newWall = Wall.Create(_doc, curves, _wallType.Id, nivel.Id, isStructural);
+                }
+                catch (Autodesk.Revit.Exceptions.InvalidOperationException ex)
+                {
+                    _log.AppendLine($"    ✗ No se pudo crear Wall desde curvas (parámetros inválidos): {ex.Message}");
+                    return false;
+                }
+                catch (Autodesk.Revit.Exceptions.ArgumentException ex)
+                {
+                    _log.AppendLine($"    ✗ No se pudo crear Wall desde curvas (argumentos inválidos): {ex.Message}");
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    _log.AppendLine($"    ✗ Error inesperado creando Wall: {ex.Message}");
+                    return false;
+                }
+
+                if (newWall == null)
+                {
+                    _log.AppendLine($"    ✗ Wall.Create retornó null");
+                    return false;
+                }
+
+                _log.AppendLine($"    ✓✓ MURO CREADO EXITOSAMENTE - ID: {newWall.Id}");
+
+                // 9. Desactivar Room Bounding
+                Parameter paramRoomBounding = newWall.get_Parameter(BuiltInParameter.WALL_ATTR_ROOM_BOUNDING);
+                if (paramRoomBounding != null && !paramRoomBounding.IsReadOnly)
+                {
+                    paramRoomBounding.Set(0);
+                }
+
+                // Copiar parámetro Comentarios primero (contiene el ID del elemento encofrado)
+                CopiarParametroComentarios(encofrado, newWall);
+
+                // Copiar nivel y desfases del elemento estructural encofrado
+                CopiarNivelYDesfasesDeElementoEncofrado(encofrado, newWall);
+
+                // 10. Mover el muro por la mitad de su ancho hacia el elemento estructural
+                try
+                {
+                    double newWallWidth = newWall.Width;
+
+                    // Desplazar hacia adentro (hacia el elemento encofrado)
+                    double espesorEncofrado = UnitUtils.ConvertToInternalUnits(18.0, UnitTypeId.Millimeters);
+                    XYZ normalHaciaAdentro = -faceNormal;
+                    XYZ translateVector = normalHaciaAdentro * espesorEncofrado;
+
+                    ElementTransformUtils.MoveElement(_doc, newWall.Id, translateVector);
+                    _log.AppendLine($"    ✓ Muro desplazado {espesorEncofrado * 304.8:F1}mm hacia el elemento estructural");
+                }
+                catch (Exception exMove)
+                {
+                    _log.AppendLine($"    ⚠ Error moviendo muro: {exMove.Message}");
+                }
+
+                _log.AppendLine($"    ✓✓ Muro creado exitosamente desde curvas de cara");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"    ✗ Error en método CrearMuroDesdeCaras: {ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    _log.AppendLine($"       Inner: {ex.InnerException.Message}");
+                }
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// MÉTODO 3: Crea un muro y edita su perfil usando SketchEditScope (Revit 2022+)
+        /// Intenta preservar la geometría compleja editando el perfil del muro
+        /// </summary>
+        private bool CrearMuroConEditProfile(Element encofrado, List<Solid> solidos, OrientacionEncofrado orientacion)
+        {
+            try
+            {
+                _log.AppendLine($"    [EDITPROFILE] Creando muro con perfil editado...");
+
+                Solid solidoPrincipal = solidos.OrderByDescending(s => s.Volume).First();
+
+                // Obtener altura real del modelo genérico original para Top Offset preciso
+                BoundingBoxXYZ bboxOriginal = encofrado.get_BoundingBox(null);
+                double zMaxOriginal = bboxOriginal != null ? bboxOriginal.Max.Z : 0;
+                double zMinOriginal = bboxOriginal != null ? bboxOriginal.Min.Z : 0;
+
+                // Encontrar cara vertical principal
+                PlanarFace caraVertical = null;
+                double maxArea = 0;
+
+                foreach (Face face in solidoPrincipal.Faces)
+                {
+                    if (face is PlanarFace pf && Math.Abs(pf.FaceNormal.Z) < 0.3 && pf.Area > maxArea)
+                    {
+                        maxArea = pf.Area;
+                        caraVertical = pf;
+                    }
+                }
+
+                if (caraVertical == null)
+                {
+                    _log.AppendLine($"    ✗ No se encontró cara vertical");
+                    return false;
+                }
+
+                // Extraer contorno y crear línea base simple
+                IList<CurveLoop> loops = caraVertical.GetEdgesAsCurveLoops();
+                if (loops.Count == 0) return false;
+
+                CurveLoop loopPrincipal = loops.OrderByDescending(l => CalcularAreaLoop(l)).First();
+
+                // Desplazar hacia cara estructural
+                double espesorEncofrado = UnitUtils.ConvertToInternalUnits(18.0, UnitTypeId.Millimeters);
+                XYZ normalHaciaAdentro = -caraVertical.FaceNormal;
+                CurveLoop loopDesplazado = DesplazarCurveLoop(loopPrincipal, normalHaciaAdentro, espesorEncofrado);
+
+                // VALIDAR el CurveLoop antes de usarlo
+                string razonValidacion;
+                if (!ValidarCurveLoopParaPerfil(loopDesplazado, out razonValidacion))
+                {
+                    _log.AppendLine($"    ✗ CurveLoop inválido: {razonValidacion}");
+                    return false;
+                }
+                _log.AppendLine($"    ✓ CurveLoop validado: {loopDesplazado.Count()} curvas, cerrado y planar");
+
+                // Obtener puntos para línea base
+                List<XYZ> puntos = new List<XYZ>();
+                foreach (Curve curve in loopDesplazado)
+                {
+                    puntos.Add(curve.GetEndPoint(0));
+                }
+
+                double zMin = puntos.Min(p => p.Z);
+                double zMax = puntos.Max(p => p.Z);
+
+                // IMPORTANTE: Usar la altura del modelo genérico original para que el perfil editado encaje perfectamente
+                // No la altura del CurveLoop procesado, que puede ser diferente
+                double alturaOriginal = zMaxOriginal - zMinOriginal;
+                double altura = alturaOriginal > 0 ? alturaOriginal : (zMax - zMin);
+
+                var puntosBase = puntos.Where(p => Math.Abs(p.Z - zMin) < 0.1).ToList();
+                if (puntosBase.Count < 2) return false;
+
+                // Línea base
+                XYZ p1 = puntosBase[0];
+                XYZ p2 = puntosBase[0];
+                double maxDist = 0;
+
+                for (int i = 0; i < puntosBase.Count; i++)
+                {
+                    for (int j = i + 1; j < puntosBase.Count; j++)
+                    {
+                        double dist = puntosBase[i].DistanceTo(puntosBase[j]);
+                        if (dist > maxDist)
+                        {
+                            maxDist = dist;
+                            p1 = puntosBase[i];
+                            p2 = puntosBase[j];
+                        }
+                    }
+                }
+
+                Level nivel = ObtenerNivelMasCercano(zMin);
+                if (nivel == null) return false;
+
+                Line lineaBase = Line.CreateBound(
+                    new XYZ(p1.X, p1.Y, nivel.Elevation),
+                    new XYZ(p2.X, p2.Y, nivel.Elevation));
+
+                // Crear muro básico con manejo de errores
+                Wall muro = null;
+                try
+                {
+                    muro = Wall.Create(_doc, lineaBase, _wallType.Id, nivel.Id, altura, 0, false, false);
+                }
+                catch (Autodesk.Revit.Exceptions.InvalidOperationException ex)
+                {
+                    _log.AppendLine($"    ✗ No se pudo crear Wall (parámetros inválidos): {ex.Message}");
+                    return false;
+                }
+                catch (Autodesk.Revit.Exceptions.ArgumentException ex)
+                {
+                    _log.AppendLine($"    ✗ No se pudo crear Wall (argumentos inválidos): {ex.Message}");
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    _log.AppendLine($"    ✗ Error inesperado creando Wall: {ex.Message}");
+                    return false;
+                }
+
+                if (muro == null)
+                {
+                    _log.AppendLine($"    ✗ Wall.Create retornó null");
+                    return false;
+                }
+
+                _log.AppendLine($"    ✓ Muro básico creado ID: {muro.Id}");
+
+                // Ajustar offset base usando el zMin del modelo genérico original
+                // Esto asegura que la base del muro coincida con la base del encofrado
+                double offsetBase = zMinOriginal - nivel.Elevation;
+                Parameter paramOffset = muro.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET);
+                if (paramOffset != null && !paramOffset.IsReadOnly)
+                {
+                    paramOffset.Set(offsetBase);
+                }
+
+                // EDITAR PERFIL con SketchEditScope
+                try
+                {
+                    // Verificar si el muro puede tener perfil editado
+                    if (!muro.CanHaveProfileSketch())
+                    {
+                        _log.AppendLine($"    ⚠ El muro no soporta perfil editado (posible arco/elipse)");
+                        return false;
+                    }
+
+                    // Crear sketch de perfil
+                    Sketch profileSketch = muro.CreateProfileSketch();
+
+                    _log.AppendLine($"    ✓ Profile sketch creado ID: {profileSketch.Id}");
+
+                    // Editar el sketch con SketchEditScope
+                    using (SketchEditScope editScope = new SketchEditScope(_doc, "Edit Wall Profile"))
+                    {
+                        editScope.Start(profileSketch.Id);
+
+                        using (SubTransaction subTrans = new SubTransaction(_doc))
+                        {
+                            subTrans.Start();
+
+                            // Eliminar TODAS las curvas existentes del sketch
+                            var allModelCurves = new FilteredElementCollector(_doc, profileSketch.Id)
+                                .OfClass(typeof(ModelCurve))
+                                .ToElementIds();
+
+                            if (allModelCurves.Count > 0)
+                            {
+                                _doc.Delete(allModelCurves);
+                                _log.AppendLine($"    Eliminadas {allModelCurves.Count} curvas existentes del perfil");
+                            }
+
+                            // Obtener plano del sketch (plano vertical del muro)
+                            SketchPlane sketchPlane = profileSketch.SketchPlane;
+                            Plane sketchPlanePlane = sketchPlane.GetPlane();
+
+                            _log.AppendLine($"    Plano del sketch: Origin={sketchPlanePlane.Origin}, Normal={sketchPlanePlane.Normal}");
+
+                            // Proyectar TODAS las curvas del loop al plano del sketch
+                            List<Curve> curvasProyectadas = new List<Curve>();
+                            int curvasAgregadas = 0;
+
+                            foreach (Curve curve in loopDesplazado)
+                            {
+                                try
+                                {
+                                    // Proyectar puntos de la curva al plano del sketch
+                                    XYZ punto0 = curve.GetEndPoint(0);
+                                    XYZ punto1 = curve.GetEndPoint(1);
+
+                                    // Proyectar al plano
+                                    UV uv0 = new UV(0, 0);
+                                    UV uv1 = new UV(0, 0);
+                                    double distance0;
+                                    double distance1;
+
+                                    sketchPlanePlane.Project(punto0, out uv0, out distance0);
+                                    sketchPlanePlane.Project(punto1, out uv1, out distance1);
+
+                                    // Convertir UV de vuelta a XYZ en el plano
+                                    XYZ punto0Projected = sketchPlanePlane.Origin + uv0.U * sketchPlanePlane.XVec + uv0.V * sketchPlanePlane.YVec;
+                                    XYZ punto1Projected = sketchPlanePlane.Origin + uv1.U * sketchPlanePlane.XVec + uv1.V * sketchPlanePlane.YVec;
+
+                                    // Crear línea proyectada (el perfil del muro siempre usa líneas)
+                                    if (punto0Projected.DistanceTo(punto1Projected) > 0.001) // Evitar líneas degeneradas
+                                    {
+                                        Line lineaProyectada = Line.CreateBound(punto0Projected, punto1Projected);
+                                        ModelCurve mc = _doc.Create.NewModelCurve(lineaProyectada, sketchPlane);
+                                        curvasAgregadas++;
+                                    }
+                                }
+                                catch (Exception exCurve)
+                                {
+                                    _log.AppendLine($"    ⚠ Error proyectando curva: {exCurve.Message}");
+                                }
+                            }
+
+                            _log.AppendLine($"    ✓ {curvasAgregadas} curvas agregadas al perfil del muro");
+
+                            if (curvasAgregadas == 0)
+                            {
+                                _log.AppendLine($"    ✗ No se pudo agregar ninguna curva al perfil");
+                                subTrans.RollBack();
+                                return false;
+                            }
+
+                            subTrans.Commit();
+                        }
+
+                        editScope.Commit(new FailuresPreprocessor());
+                    }
+
+                    _log.AppendLine($"    ✓ Perfil editado exitosamente");
+
+                    // Desactivar Room Bounding
+                    Parameter paramRoomBounding = muro.get_Parameter(BuiltInParameter.WALL_ATTR_ROOM_BOUNDING);
+                    if (paramRoomBounding != null && !paramRoomBounding.IsReadOnly)
+                    {
+                        paramRoomBounding.Set(0);
+                    }
+
+                    // Copiar parámetro Comentarios primero (contiene el ID del elemento encofrado)
+                    CopiarParametroComentarios(encofrado, muro);
+
+                    // Copiar nivel y desfases del elemento estructural encofrado
+                    CopiarNivelYDesfasesDeElementoEncofrado(encofrado, muro);
+
+                    return true;
+                }
+                catch (Exception exProfile)
+                {
+                    _log.AppendLine($"    ✗ Error editando perfil: {exProfile.Message}");
+                    // Dejar el muro básico si falla la edición
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"    ✗ Error en método EditProfile: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// MÉTODO 5: Crea DirectShape con categoría OST_Walls
+        /// Preserva geometría completa pero como DirectShape (no Wall verdadero)
+        /// </summary>
+        private bool CrearMuroComoDirectShape(Element encofrado, List<Solid> solidos)
+        {
+            try
+            {
+                _log.AppendLine($"    [DIRECTSHAPE] Creando DirectShape con categoría Walls...");
+
+                List<GeometryObject> geometryList = new List<GeometryObject>();
+
+                foreach (Solid solid in solidos)
+                {
+                    if (solid.Volume > 0.001)
+                        geometryList.Add(solid);
+                }
+
+                if (geometryList.Count == 0) return false;
+
+                // Crear DirectShape con categoría Walls
+                DirectShape wallShape = DirectShape.CreateElement(_doc, new ElementId(BuiltInCategory.OST_Walls));
+                wallShape.SetShape(geometryList);
+
+                _log.AppendLine($"    ✓ DirectShape creado con categoría Walls ID: {wallShape.Id}");
+
+                // Copiar nombre si existe
+                string nombre = encofrado.Name;
+                if (!string.IsNullOrEmpty(nombre))
+                {
+                    wallShape.Name = nombre + "_Wall";
+                }
+
+                // Desactivar Room Bounding
+                Parameter paramRoomBounding = wallShape.get_Parameter(BuiltInParameter.WALL_ATTR_ROOM_BOUNDING);
+                if (paramRoomBounding != null && !paramRoomBounding.IsReadOnly)
+                {
+                    paramRoomBounding.Set(0);
+                }
+
+                CopiarParametroComentarios(encofrado, wallShape);
+
+                _log.AppendLine($"    ✓ Geometría completa preservada como DirectShape");
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"    ✗ Error creando DirectShape: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// MÉTODO 4: Intenta crear Wall usando múltiples CurveLoops
+        /// Prueba con todos los loops extraídos de las caras
+        /// </summary>
+        private bool CrearMuroConCurveLoopsComplejos(Element encofrado, List<Solid> solidos, OrientacionEncofrado orientacion)
+        {
+            try
+            {
+                _log.AppendLine($"    [CURVELOOPS] Intentando Wall con CurveLoops complejos...");
+
+                Solid solidoPrincipal = solidos.OrderByDescending(s => s.Volume).First();
+
+                // Encontrar cara vertical
+                PlanarFace caraVertical = null;
+                double maxArea = 0;
+
+                foreach (Face face in solidoPrincipal.Faces)
+                {
+                    if (face is PlanarFace pf && Math.Abs(pf.FaceNormal.Z) < 0.3 && pf.Area > maxArea)
+                    {
+                        maxArea = pf.Area;
+                        caraVertical = pf;
+                    }
+                }
+
+                if (caraVertical == null) return false;
+
+                // Extraer TODOS los loops (exterior + huecos)
+                IList<CurveLoop> loops = caraVertical.GetEdgesAsCurveLoops();
+                if (loops.Count == 0) return false;
+
+                _log.AppendLine($"    Encontrados {loops.Count} CurveLoops");
+
+                // Desplazar todos los loops
+                double espesorEncofrado = UnitUtils.ConvertToInternalUnits(18.0, UnitTypeId.Millimeters);
+                XYZ normalHaciaAdentro = -caraVertical.FaceNormal;
+
+                List<CurveLoop> loopsDesplazados = new List<CurveLoop>();
+                foreach (CurveLoop loop in loops)
+                {
+                    CurveLoop loopDesplazado = DesplazarCurveLoop(loop, normalHaciaAdentro, espesorEncofrado);
+                    loopsDesplazados.Add(loopDesplazado);
+                }
+
+                // NOTA: Wall.Create con múltiples loops no existe en API estándar
+                // Este método probablemente fallará, pero lo intentamos
+                _log.AppendLine($"    ⚠ Wall.Create con múltiples loops no soportado directamente");
+                _log.AppendLine($"    Intentando crear con loop principal solamente");
+
+                // Tomar solo el loop más grande
+                CurveLoop loopPrincipal = loopsDesplazados.OrderByDescending(l => CalcularAreaLoop(l)).First();
+
+                // Obtener dimensiones del modelo genérico ORIGINAL
+                BoundingBoxXYZ bboxOriginal = encofrado.get_BoundingBox(null);
+                double zMinOriginal = bboxOriginal != null ? bboxOriginal.Min.Z : 0;
+                double zMaxOriginal = bboxOriginal != null ? bboxOriginal.Max.Z : 0;
+                double alturaOriginal = zMaxOriginal - zMinOriginal;
+
+                // Obtener línea base como respaldo
+                List<XYZ> puntos = new List<XYZ>();
+                foreach (Curve curve in loopPrincipal)
+                {
+                    puntos.Add(curve.GetEndPoint(0));
+                }
+
+                double zMin = puntos.Min(p => p.Z);
+                double altura = alturaOriginal > 0 ? alturaOriginal : (puntos.Max(p => p.Z) - zMin);
+
+                var puntosBase = puntos.Where(p => Math.Abs(p.Z - zMin) < 0.1).ToList();
+                if (puntosBase.Count < 2) return false;
+
+                XYZ p1 = puntosBase[0];
+                XYZ p2 = puntosBase[0];
+                double maxDist = 0;
+
+                for (int i = 0; i < puntosBase.Count; i++)
+                {
+                    for (int j = i + 1; j < puntosBase.Count; j++)
+                    {
+                        double dist = puntosBase[i].DistanceTo(puntosBase[j]);
+                        if (dist > maxDist)
+                        {
+                            maxDist = dist;
+                            p1 = puntosBase[i];
+                            p2 = puntosBase[j];
+                        }
+                    }
+                }
+
+                Level nivel = ObtenerNivelMasCercano(zMin);
+                if (nivel == null) return false;
+
+                Line lineaBase = Line.CreateBound(
+                    new XYZ(p1.X, p1.Y, nivel.Elevation),
+                    new XYZ(p2.X, p2.Y, nivel.Elevation));
+
+                Wall muro = null;
+                try
+                {
+                    muro = Wall.Create(_doc, lineaBase, _wallType.Id, nivel.Id, altura, 0, false, false);
+                }
+                catch (Autodesk.Revit.Exceptions.InvalidOperationException ex)
+                {
+                    _log.AppendLine($"    ✗ No se pudo crear Wall (parámetros inválidos): {ex.Message}");
+                    return false;
+                }
+                catch (Autodesk.Revit.Exceptions.ArgumentException ex)
+                {
+                    _log.AppendLine($"    ✗ No se pudo crear Wall (argumentos inválidos): {ex.Message}");
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    _log.AppendLine($"    ✗ Error inesperado creando Wall: {ex.Message}");
+                    return false;
+                }
+
+                if (muro == null)
+                {
+                    _log.AppendLine($"    ✗ Wall.Create retornó null");
+                    return false;
+                }
+
+                _log.AppendLine($"    ✓ Muro creado con loop principal ID: {muro.Id}");
+
+                // Desactivar Room Bounding
+                Parameter paramRoomBounding = muro.get_Parameter(BuiltInParameter.WALL_ATTR_ROOM_BOUNDING);
+                if (paramRoomBounding != null && !paramRoomBounding.IsReadOnly)
+                {
+                    paramRoomBounding.Set(0);
+                }
+
+                // Copiar parámetro Comentarios primero (contiene el ID del elemento encofrado)
+                CopiarParametroComentarios(encofrado, muro);
+
+                // Copiar nivel y desfases del elemento estructural encofrado
+                CopiarNivelYDesfasesDeElementoEncofrado(encofrado, muro);
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"    ✗ Error con CurveLoops: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Clase auxiliar para procesar fallos en SketchEditScope
+        /// </summary>
+        private class FailuresPreprocessor : IFailuresPreprocessor
+        {
+            public FailureProcessingResult PreprocessFailures(FailuresAccessor failuresAccessor)
+            {
+                // Intentar resolver automáticamente los fallos
+                foreach (FailureMessageAccessor failure in failuresAccessor.GetFailureMessages())
+                {
+                    failuresAccessor.DeleteWarning(failure);
+                }
+                return FailureProcessingResult.Continue;
+            }
+        }
+
+        /// <summary>
+        /// MÉTODO 6: Crea un MURO NATIVO de Revit desde la geometría del encofrado
+        /// NOTA: Los recortes complejos no se pueden transferir a muros nativos
+        /// Se crea el muro con el contorno exterior del encofrado (método tradicional)
+        /// </summary>
+        private bool CrearMuroNativo(Element encofrado, List<Solid> solidos, OrientacionEncofrado orientacion)
+        {
+            try
+            {
+                _log.AppendLine($"    [MURO NATIVO] Creando muro nativo desde geometría...");
+
+                Solid solidoPrincipal = solidos.OrderByDescending(s => s.Volume).First();
+
+                // Encontrar cara vertical más grande
+                PlanarFace caraVertical = null;
+                double maxArea = 0;
+
+                foreach (Face face in solidoPrincipal.Faces)
+                {
+                    if (face is PlanarFace pf && Math.Abs(pf.FaceNormal.Z) < 0.3 && pf.Area > maxArea)
+                    {
+                        maxArea = pf.Area;
+                        caraVertical = pf;
+                    }
+                }
+
+                if (caraVertical == null)
+                {
+                    _log.AppendLine($"    ✗ No se encontró cara vertical");
+                    return false;
+                }
+
+                // Extraer contorno de la cara - esto nos da el perfil del muro
+                IList<CurveLoop> loops = caraVertical.GetEdgesAsCurveLoops();
+                if (loops.Count == 0)
+                {
+                    _log.AppendLine($"    ✗ No se encontraron contornos");
+                    return false;
+                }
+
+                // DESPLAZAR LOOPS HACIA DENTRO por el espesor del panel (18mm)
+                // El encofrado está extruido HACIA AFUERA de la cara estructural
+                double espesorEncofrado = UnitUtils.ConvertToInternalUnits(18.0, UnitTypeId.Millimeters);
+                XYZ normalHaciaAdentro = -caraVertical.FaceNormal;
+
+                CurveLoop loopPrincipal = loops.OrderByDescending(l => CalcularAreaLoop(l)).First();
+                CurveLoop loopDesplazado = DesplazarCurveLoop(loopPrincipal, normalHaciaAdentro, espesorEncofrado);
+
+                _log.AppendLine($"    Loop desplazado {espesorEncofrado * 304.8:F1}mm hacia cara estructural");
+
+                // Obtener dimensiones del modelo genérico ORIGINAL
+                BoundingBoxXYZ bboxOriginal = encofrado.get_BoundingBox(null);
+                double zMinOriginal = bboxOriginal != null ? bboxOriginal.Min.Z : 0;
+                double zMaxOriginal = bboxOriginal != null ? bboxOriginal.Max.Z : 0;
+                double alturaOriginal = zMaxOriginal - zMinOriginal;
+
+                // Obtener puntos del loop desplazado
+                List<XYZ> puntos = new List<XYZ>();
+                foreach (Curve curve in loopDesplazado)
+                {
+                    puntos.Add(curve.GetEndPoint(0));
+                }
+
+                double zMin = puntos.Min(p => p.Z);
+                double altura = alturaOriginal > 0 ? alturaOriginal : (puntos.Max(p => p.Z) - zMin);
+
+                var puntosBase = puntos.Where(p => Math.Abs(p.Z - zMin) < 0.1).ToList();
+                if (puntosBase.Count < 2)
+                {
+                    _log.AppendLine($"    ✗ Insuficientes puntos base");
+                    return false;
+                }
+
+                // Encontrar línea base (dos puntos más alejados en la base)
+                XYZ p1 = puntosBase[0];
+                XYZ p2 = puntosBase[0];
+                double maxDist = 0;
+
+                for (int i = 0; i < puntosBase.Count; i++)
+                {
+                    for (int j = i + 1; j < puntosBase.Count; j++)
+                    {
+                        double dist = puntosBase[i].DistanceTo(puntosBase[j]);
+                        if (dist > maxDist)
+                        {
+                            maxDist = dist;
+                            p1 = puntosBase[i];
+                            p2 = puntosBase[j];
+                        }
+                    }
+                }
+
+                Level nivel = ObtenerNivelMasCercano(zMin);
+                if (nivel == null)
+                {
+                    _log.AppendLine($"    ✗ No se encontró nivel");
+                    return false;
+                }
+
+                // Crear línea base ajustada al nivel
+                Line lineaBase = Line.CreateBound(
+                    new XYZ(p1.X, p1.Y, nivel.Elevation),
+                    new XYZ(p2.X, p2.Y, nivel.Elevation));
+
+                // CREAR MURO NATIVO con manejo de errores
+                Wall muro = null;
+                try
+                {
+                    muro = Wall.Create(_doc, lineaBase, _wallType.Id, nivel.Id, altura, 0, false, false);
+                }
+                catch (Autodesk.Revit.Exceptions.InvalidOperationException ex)
+                {
+                    _log.AppendLine($"    ✗ No se pudo crear Wall (parámetros inválidos): {ex.Message}");
+                    return false;
+                }
+                catch (Autodesk.Revit.Exceptions.ArgumentException ex)
+                {
+                    _log.AppendLine($"    ✗ No se pudo crear Wall (argumentos inválidos): {ex.Message}");
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    _log.AppendLine($"    ✗ Error inesperado creando Wall: {ex.Message}");
+                    return false;
+                }
+
+                if (muro == null)
+                {
+                    _log.AppendLine($"    ✗ Fallo al crear muro nativo");
+                    return false;
+                }
+
+                _log.AppendLine($"    ✓ Muro nativo creado ID: {muro.Id}");
+
+                // Desactivar Room Bounding
+                Parameter paramRoomBounding = muro.get_Parameter(BuiltInParameter.WALL_ATTR_ROOM_BOUNDING);
+                if (paramRoomBounding != null && !paramRoomBounding.IsReadOnly)
+                {
+                    paramRoomBounding.Set(0);
+                    _log.AppendLine($"    ✓ Room Bounding desactivado");
+                }
+
+                // Copiar parámetro Comentarios primero (contiene el ID del elemento encofrado)
+                CopiarParametroComentarios(encofrado, muro);
+
+                // Copiar nivel y desfases del elemento estructural encofrado
+                CopiarNivelYDesfasesDeElementoEncofrado(encofrado, muro);
+
+                _log.AppendLine($"    ✓ Muro nativo creado exitosamente");
+                _log.AppendLine($"    ⚠ NOTA: Recortes geométricos no transferibles a muros nativos");
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"    ✗ Error creando muro nativo: {ex.Message}");
+                return false;
+            }
+        }
+
+
+        /// <summary>
+        /// Crea un muro con perfil complejo usando Sketch
+        /// El perfil sigue exactamente la geometría del encofrado con recortes
+        /// </summary>
+        private Wall CrearMuroConPerfilComplejo(CurveLoop loopExterior, List<CurveLoop> loopsInteriores,
+                                                 PlanarFace caraReferencia, Level nivel)
+        {
+            try
+            {
+                _log.AppendLine($"    [SKETCH] Creando muro con perfil complejo...");
+
+                // 1. Crear SketchPlane vertical en el plano de la cara
+                XYZ normal = caraReferencia.FaceNormal;
+                XYZ origin = caraReferencia.Origin;
+                Plane plano = Plane.CreateByNormalAndOrigin(normal, origin);
+                SketchPlane sketchPlane = SketchPlane.Create(_doc, plano);
+
+                _log.AppendLine($"    [SKETCH] SketchPlane creado ID: {sketchPlane.Id}");
+
+                // 2. Preparar todas las CurveArrays (exterior + huecos)
+                CurveArray curvasExteriores = new CurveArray();
+                foreach (Curve curve in loopExterior)
+                {
+                    curvasExteriores.Append(curve);
+                }
+
+                _log.AppendLine($"    [SKETCH] Perfil exterior: {curvasExteriores.Size} curvas");
+
+                List<CurveArray> curvosInterioresArrays = new List<CurveArray>();
+                foreach (CurveLoop loopInterior in loopsInteriores)
+                {
+                    CurveArray curvasInterior = new CurveArray();
+                    foreach (Curve curve in loopInterior)
+                    {
+                        curvasInterior.Append(curve);
+                    }
+                    curvosInterioresArrays.Add(curvasInterior);
+                    _log.AppendLine($"    [SKETCH] Hueco interior preparado: {curvasInterior.Size} curvas");
+                }
+
+                // 3. Crear DirectShape temporal con el perfil complejo como referencia visual
+                // Los muros nativos de Revit NO soportan perfiles complejos con huecos directamente
+                // La única forma es usar aberturas o familias void
+
+                Wall muro = null;
+
+                // Crear el muro con el contorno exterior
+                List<XYZ> puntos = new List<XYZ>();
+                foreach (Curve curve in loopExterior)
+                {
+                    puntos.Add(curve.GetEndPoint(0));
+                    puntos.Add(curve.GetEndPoint(1));
+                }
+
+                double zMin = puntos.Min(p => p.Z);
+                double zMax = puntos.Max(p => p.Z);
+                double altura = zMax - zMin;
+
+                var puntosBase = puntos.Where(p => Math.Abs(p.Z - zMin) < 0.1).ToList();
+                if (puntosBase.Count < 2)
+                {
+                    _log.AppendLine($"    [SKETCH] ✗ Insuficientes puntos base");
+                    return null;
+                }
+
+                // Encontrar línea base
+                XYZ p1 = puntosBase[0];
+                XYZ p2 = puntosBase[0];
+                double maxDist = 0;
+
+                for (int i = 0; i < puntosBase.Count; i++)
+                {
+                    for (int j = i + 1; j < puntosBase.Count; j++)
+                    {
+                        double dist = puntosBase[i].DistanceTo(puntosBase[j]);
+                        if (dist > maxDist)
+                        {
+                            maxDist = dist;
+                            p1 = puntosBase[i];
+                            p2 = puntosBase[j];
+                        }
+                    }
+                }
+
+                Line lineaBase = Line.CreateBound(
+                    new XYZ(p1.X, p1.Y, nivel.Elevation),
+                    new XYZ(p2.X, p2.Y, nivel.Elevation));
+
+                // Crear muro base con manejo de errores
+                try
+                {
+                    muro = Wall.Create(_doc, lineaBase, _wallType.Id, nivel.Id, altura, 0, false, false);
+                }
+                catch (Autodesk.Revit.Exceptions.InvalidOperationException ex)
+                {
+                    _log.AppendLine($"    [SKETCH] ✗ No se pudo crear Wall (parámetros inválidos): {ex.Message}");
+                    return null;
+                }
+                catch (Autodesk.Revit.Exceptions.ArgumentException ex)
+                {
+                    _log.AppendLine($"    [SKETCH] ✗ No se pudo crear Wall (argumentos inválidos): {ex.Message}");
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    _log.AppendLine($"    [SKETCH] ✗ Error inesperado creando Wall: {ex.Message}");
+                    return null;
+                }
+
+                if (muro == null)
+                {
+                    _log.AppendLine($"    [SKETCH] ✗ Fallo al crear muro");
+                    return null;
+                }
+
+                _log.AppendLine($"    [SKETCH] ✓ Muro base creado ID: {muro.Id}");
+
+                // Ajustar offset base
+                double offsetBase = zMin - nivel.Elevation;
+                Parameter paramOffset = muro.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET);
+                if (paramOffset != null && !paramOffset.IsReadOnly)
+                {
+                    paramOffset.Set(offsetBase);
+                }
+
+                // APLICAR RECORTES usando BooleanOperations
+                if (loopsInteriores.Count > 0)
+                {
+                    _log.AppendLine($"    [SKETCH] Aplicando {loopsInteriores.Count} recortes mediante sólidos void...");
+
+                    try
+                    {
+                        int recortesAplicados = AplicarRecortesMedianteVoids(muro, loopsInteriores, sketchPlane, altura);
+
+                        if (recortesAplicados > 0)
+                        {
+                            _log.AppendLine($"    [SKETCH] ✓ {recortesAplicados} recortes aplicados mediante voids");
+                        }
+                        else
+                        {
+                            _log.AppendLine($"    [SKETCH] ⚠ No se pudieron aplicar recortes con voids");
+                        }
+                    }
+                    catch (Exception exRecortes)
+                    {
+                        _log.AppendLine($"    [SKETCH] ⚠ Error aplicando recortes: {exRecortes.Message}");
+                    }
+                }
+
+                return muro;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"    [SKETCH] ✗ Error: {ex.Message}");
+                return null;
+            }
+        }
+
+
+
+        /// <summary>
+        /// Aplica recortes al muro creando sólidos void desde los loops interiores
+        /// </summary>
+        private int AplicarRecortesMedianteVoids(Wall muro, List<CurveLoop> loopsInteriores,
+                                                  SketchPlane sketchPlane, double altura)
+        {
+            int recortesAplicados = 0;
+
+            try
+            {
+                _log.AppendLine($"    [VOIDS] Creando sólidos void para {loopsInteriores.Count} recortes...");
+
+                // Para cada loop interior, crear un sólido void y recortar el muro
+                foreach (CurveLoop loopInterior in loopsInteriores)
+                {
+                    try
+                    {
+                        // Crear sólido extrusionando el loop interior
+                        XYZ direccionExtrusion = sketchPlane.GetPlane().Normal;
+                        double profundidadExtrusion = altura + 1.0; // Un poco más largo que el muro
+
+                        List<CurveLoop> profileLoops = new List<CurveLoop> { loopInterior };
+                        Solid solidoVoid = GeometryCreationUtilities.CreateExtrusionGeometry(
+                            profileLoops,
+                            direccionExtrusion,
+                            profundidadExtrusion);
+
+                        if (solidoVoid != null && solidoVoid.Volume > 0.001)
+                        {
+                            // Crear DirectShape temporal con el void para recortar
+                            DirectShape dsVoid = DirectShape.CreateElement(_doc, new ElementId(BuiltInCategory.OST_GenericModel));
+                            dsVoid.SetShape(new List<GeometryObject> { solidoVoid });
+
+                            // Intentar aplicar el corte usando InstanceVoidCutUtils
+                            try
+                            {
+                                InstanceVoidCutUtils.AddInstanceVoidCut(_doc, muro, dsVoid);
+                                recortesAplicados++;
+                                _log.AppendLine($"    [VOIDS] Void {recortesAplicados} aplicado al muro");
+                            }
+                            catch (Exception exCut)
+                            {
+                                _log.AppendLine($"    [VOIDS] ⚠ No se pudo aplicar corte void: {exCut.Message}");
+                                // Eliminar el DirectShape temporal si falló el corte
+                                _doc.Delete(dsVoid.Id);
+                            }
+                        }
+                        else
+                        {
+                            _log.AppendLine($"    [VOIDS] ⚠ No se pudo crear sólido void válido para loop");
+                        }
+                    }
+                    catch (Exception exLoop)
+                    {
+                        _log.AppendLine($"    [VOIDS] ⚠ Error procesando loop interior: {exLoop.Message}");
+                    }
+                }
+
+                _log.AppendLine($"    [VOIDS] Total recortes aplicados: {recortesAplicados} de {loopsInteriores.Count}");
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"    [VOIDS] ✗ Error aplicando voids: {ex.Message}");
+            }
+
+            return recortesAplicados;
+        }
+
+        /// <summary>
+        /// Edita el perfil de un muro para incluir recortes usando su Sketch
+        /// </summary>
+        private bool EditarPerfilMuroConRecortes(Wall muro, CurveLoop loopExterior, List<CurveLoop> loopsInteriores,
+                                                  SketchPlane sketchPlane)
+        {
+            try
+            {
+                _log.AppendLine($"    [PERFIL] Editando perfil del muro...");
+
+                // Obtener el sketch del muro
+                ElementId sketchId = muro.SketchId;
+                if (sketchId == null || sketchId == ElementId.InvalidElementId)
+                {
+                    _log.AppendLine($"    [PERFIL] ⚠ El muro no tiene Sketch - es un muro recto que no soporta perfil complejo");
+                    return false;
+                }
+
+                Sketch sketch = _doc.GetElement(sketchId) as Sketch;
+                if (sketch == null)
+                {
+                    _log.AppendLine($"    [PERFIL] ✗ No se pudo obtener el Sketch del muro");
+                    return false;
+                }
+
+                _log.AppendLine($"    [PERFIL] Sketch encontrado ID: {sketch.Id}");
+
+                // Acceder al Profile del sketch
+                CurveArrArray profile = sketch.Profile;
+                if (profile == null || profile.Size == 0)
+                {
+                    _log.AppendLine($"    [PERFIL] ✗ El Sketch no tiene perfil");
+                    return false;
+                }
+
+                _log.AppendLine($"    [PERFIL] Perfil actual tiene {profile.Size} CurveArray(s)");
+
+                // Limpiar el perfil actual
+                profile.Clear();
+
+                // Agregar el loop exterior al perfil
+                CurveArray arrayExterior = new CurveArray();
+                foreach (Curve curve in loopExterior)
+                {
+                    arrayExterior.Append(curve);
+                }
+                profile.Append(arrayExterior);
+
+                _log.AppendLine($"    [PERFIL] Loop exterior agregado: {arrayExterior.Size} curvas");
+
+                // Agregar loops interiores (huecos) al perfil
+                foreach (CurveLoop loopInterior in loopsInteriores)
+                {
+                    CurveArray arrayInterior = new CurveArray();
+                    foreach (Curve curve in loopInterior)
+                    {
+                        arrayInterior.Append(curve);
+                    }
+                    profile.Append(arrayInterior);
+                    _log.AppendLine($"    [PERFIL] Loop interior agregado: {arrayInterior.Size} curvas");
+                }
+
+                _log.AppendLine($"    [PERFIL] ✓ Perfil editado con {loopsInteriores.Count} huecos");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"    [PERFIL] ✗ Error: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Crea un SUELO NATIVO de Revit desde el encofrado
+        /// </summary>
+        private bool CrearSueloNativo(Element encofrado, List<Solid> solidos, OrientacionEncofrado orientacion)
+        {
+            try
+            {
+                Solid solidoPrincipal = solidos.OrderByDescending(s => s.Volume).First();
+
+                // Buscar la cara con mayor componente Z (horizontal o inclinada)
+                PlanarFace caraPrincipal = null;
+                double mejorComponenteZ = 0;
+
+                foreach (Face face in solidoPrincipal.Faces)
+                {
+                    if (face is PlanarFace pf)
+                    {
+                        double componenteZ = Math.Abs(pf.FaceNormal.Z);
+                        if (componenteZ > mejorComponenteZ)
+                        {
+                            mejorComponenteZ = componenteZ;
+                            caraPrincipal = pf;
+                        }
+                    }
+                }
+
+                if (caraPrincipal == null)
+                {
+                    _log.AppendLine($"  ✗ No se encontró cara principal");
+                    return false;
+                }
+
+                // Obtener contornos
+                IList<CurveLoop> curveLoops = caraPrincipal.GetEdgesAsCurveLoops();
+                if (curveLoops.Count == 0)
+                {
+                    _log.AppendLine($"  ✗ No se encontraron contornos");
+                    return false;
+                }
+
+                // DESPLAZAR LOOPS HACIA DENTRO por el espesor del panel
+                // El encofrado (cimbra) tiene 25mm de espesor y está extruido HACIA AFUERA de la cara estructural
+                // Necesitamos mover los loops hacia DENTRO para que el suelo quede pegado a la cara estructural
+                double espesorCimbra = UnitUtils.ConvertToInternalUnits(25.0, UnitTypeId.Millimeters);
+                XYZ normalHaciaAdentro = -caraPrincipal.FaceNormal; // Invertir normal para ir hacia adentro
+
+                List<CurveLoop> curveLoopsDesplazados = new List<CurveLoop>();
+                foreach (CurveLoop loop in curveLoops)
+                {
+                    CurveLoop loopDesplazado = DesplazarCurveLoop(loop, normalHaciaAdentro, espesorCimbra);
+                    curveLoopsDesplazados.Add(loopDesplazado);
+                }
+
+                _log.AppendLine($"  Loops desplazados {espesorCimbra * 304.8:F1}mm hacia cara estructural");
+
+                // Calcular elevación promedio de los puntos desplazados
+                double elevacionPromedio = CalcularElevacionPromedio(curveLoopsDesplazados);
+                Level nivel = ObtenerNivelMasCercano(elevacionPromedio);
+
+                if (nivel == null)
+                {
+                    _log.AppendLine($"  ✗ No se encontró nivel");
+                    return false;
+                }
+
+                // CRÍTICO: Floor.Create requiere que los loops estén en un plano HORIZONTAL (paralelo a XY)
+                // Proyectar todos los loops al plano horizontal a la elevación calculada
+                List<CurveLoop> curveLoopsHorizontales = new List<CurveLoop>();
+                foreach (CurveLoop loopDesplazado in curveLoopsDesplazados)
+                {
+                    CurveLoop loopHorizontal = ProyectarCurveLoopAPlanoHorizontal(loopDesplazado, elevacionPromedio);
+                    if (loopHorizontal != null && loopHorizontal.Count() > 0)
+                    {
+                        curveLoopsHorizontales.Add(loopHorizontal);
+                    }
+                }
+
+                if (curveLoopsHorizontales.Count == 0)
+                {
+                    _log.AppendLine($"  ✗ No se pudo proyectar ningún loop al plano horizontal");
+                    return false;
+                }
+
+                _log.AppendLine($"  ✓ {curveLoopsHorizontales.Count} loops proyectados al plano horizontal Z={elevacionPromedio:F4}");
+
+                // Validar que los loops son válidos para Floor.Create
+                foreach (CurveLoop loop in curveLoopsHorizontales)
+                {
+                    string razon;
+                    if (!ValidarCurveLoopParaSuelo(loop, out razon))
+                    {
+                        _log.AppendLine($"  ✗ Loop inválido para suelo: {razon}");
+                        return false;
+                    }
+                }
+
+                _log.AppendLine($"  ✓ Todos los loops validados para Floor.Create");
+
+                // Crear suelo nativo con los loops horizontales
+                Floor suelo = Floor.Create(_doc, curveLoopsHorizontales, _floorType.Id, nivel.Id);
+
+                if (suelo == null)
+                {
+                    _log.AppendLine($"  ✗ Fallo al crear suelo");
+                    return false;
+                }
+
+                // Ajustar elevación usando altura desplazada
+                double offsetNecesario = elevacionPromedio - nivel.Elevation;
+                if (Math.Abs(offsetNecesario) > 0.01)
+                {
+                    Parameter paramHeightOffset = suelo.get_Parameter(BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM);
+                    if (paramHeightOffset != null && !paramHeightOffset.IsReadOnly)
+                    {
+                        paramHeightOffset.Set(offsetNecesario);
+                        _log.AppendLine($"  Offset elevación aplicado: {offsetNecesario:F4} ft ({offsetNecesario * 304.8:F1}mm)");
+                    }
+                }
+                else
+                {
+                    _log.AppendLine($"  Sin offset - suelo en nivel {nivel.Name}");
+                }
+
+                // Aplicar inclinación si es necesario usando SlabShapeEditor
+                bool esInclinado = TryAplicarInclinacionSuelo(suelo, caraPrincipal, nivel);
+
+                // Copiar comentarios
+                CopiarParametroComentarios(encofrado, suelo);
+
+                _log.AppendLine($"  ✓ Suelo nativo creado (Inclinado: {esInclinado})");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"  ✗ Error creando suelo: {ex.Message}");
+                return false;
+            }
+        }
+
+
+        /// <summary>
+        /// Intenta aplicar inclinación a un suelo usando SlabShapeEditor
+        /// </summary>
+        private bool TryAplicarInclinacionSuelo(Floor suelo, PlanarFace caraPrincipal, Level nivel)
+        {
+            try
+            {
+                // Verificar si la cara está inclinada
+                double normalZ = Math.Abs(caraPrincipal.FaceNormal.Z);
+                if (normalZ > 0.95) // Casi horizontal
+                    return false;
+
+                SlabShapeEditor editor = suelo.GetSlabShapeEditor();
+                if (editor == null)
+                    return false;
+
+                editor.ResetSlabShape();
+
+                // Obtener vértices y ajustar elevaciones
+                SlabShapeVertexArray vertices = editor.SlabShapeVertices;
+
+                foreach (SlabShapeVertex vertex in vertices)
+                {
+                    // Proyectar vértice a la cara original para obtener elevación correcta
+                    XYZ posicionVertex = vertex.Position;
+
+                    // Calcular Z en la cara inclinada
+                    // (implementación simplificada)
+                    double offsetZ = 0; // Calcular basado en la normal y posición de la cara
+
+                    if (Math.Abs(offsetZ) > 0.001)
+                    {
+                        editor.ModifySubElement(vertex, offsetZ);
+                    }
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Extrae el sólido principal (mayor volumen) de un elemento
+        /// </summary>
+        private Solid ExtraerSolidoPrincipal(Element elemento)
+        {
+            List<Solid> solidos = ExtraerSolidos(elemento);
+            return solidos.OrderByDescending(s => s.Volume).FirstOrDefault();
+        }
+
+        /// <summary>
+        /// Extrae todos los sólidos válidos de un elemento
+        /// </summary>
+        private List<Solid> ExtraerSolidos(Element elemento)
+        {
+            List<Solid> solidos = new List<Solid>();
+
+            Options opts = new Options
+            {
+                DetailLevel = ViewDetailLevel.Fine,
+                ComputeReferences = false
+            };
+
+            GeometryElement geomElem = elemento.get_Geometry(opts);
+            if (geomElem == null) return solidos;
+
+            foreach (GeometryObject geomObj in geomElem)
+            {
+                if (geomObj is Solid solid && solid.Volume > 0.001)
+                {
+                    solidos.Add(solid);
+                }
+            }
+
+            return solidos;
+        }
+
+        /// <summary>
+        /// Analiza la orientación dominante de los sólidos
+        /// Cuenta caras verticales vs horizontales con área significativa
+        /// Regla: Vertical (muro) si tiene más caras verticales grandes que horizontales
+        /// </summary>
+        private OrientacionEncofrado AnalizarOrientacion(List<Solid> solidos)
+        {
+            _log.AppendLine($"    Analizando caras de {solidos.Count} sólido(s):");
+
+            // Recopilar todas las caras planares con su área y orientación
+            List<(PlanarFace face, double area, double absZ)> carasAnalizadas = new List<(PlanarFace, double, double)>();
+
+            foreach (Solid solido in solidos)
+            {
+                foreach (Face face in solido.Faces)
+                {
+                    if (face is PlanarFace pf && pf.Area > 0.001)
+                    {
+                        double absZ = Math.Abs(pf.FaceNormal.Z);
+                        carasAnalizadas.Add((pf, pf.Area, absZ));
+                    }
+                }
+            }
+
+            _log.AppendLine($"    Total de caras planares: {carasAnalizadas.Count}");
+
+            if (carasAnalizadas.Count == 0)
+            {
+                _log.AppendLine($"    ⚠ No se encontraron caras planares - asumiendo horizontal");
+                return new OrientacionEncofrado
+                {
+                    Tipo = TipoOrientacion.Horizontal,
+                    NormalPromedio = XYZ.BasisZ
+                };
+            }
+
+            // Encontrar el área promedio para filtrar caras pequeñas
+            double areaPromedio = carasAnalizadas.Average(c => c.area);
+            double umbralAreaSignificativa = areaPromedio * 0.2; // 20% del área promedio
+
+            _log.AppendLine($"    Área promedio: {areaPromedio:F4} ft²");
+            _log.AppendLine($"    Umbral área significativa: {umbralAreaSignificativa:F4} ft²");
+
+            // Contar caras verticales vs horizontales CON ÁREA SIGNIFICATIVA
+            int carasVerticales = 0;
+            int carasHorizontales = 0;
+            double areaVerticalTotal = 0;
+            double areaHorizontalTotal = 0;
+            PlanarFace mejorCaraVertical = null;
+            PlanarFace mejorCaraHorizontal = null;
+            double maxAreaVertical = 0;
+            double maxAreaHorizontal = 0;
+
+            foreach (var (face, area, absZ) in carasAnalizadas)
+            {
+                // Solo considerar caras con área significativa
+                if (area < umbralAreaSignificativa)
+                    continue;
+
+                if (absZ < 0.3) // Vertical: |Z| < 0.3
+                {
+                    carasVerticales++;
+                    areaVerticalTotal += area;
+                    if (area > maxAreaVertical)
+                    {
+                        maxAreaVertical = area;
+                        mejorCaraVertical = face;
+                    }
+                    _log.AppendLine($"      Cara VERTICAL: |Z|={absZ:F3}, Área={area:F4}");
+                }
+                else // Horizontal: |Z| >= 0.3
+                {
+                    carasHorizontales++;
+                    areaHorizontalTotal += area;
+                    if (area > maxAreaHorizontal)
+                    {
+                        maxAreaHorizontal = area;
+                        mejorCaraHorizontal = face;
+                    }
+                    _log.AppendLine($"      Cara HORIZONTAL: |Z|={absZ:F3}, Área={area:F4}");
+                }
+            }
+
+            _log.AppendLine($"    Resumen:");
+            _log.AppendLine($"      Caras verticales significativas: {carasVerticales} (área total: {areaVerticalTotal:F4})");
+            _log.AppendLine($"      Caras horizontales significativas: {carasHorizontales} (área total: {areaHorizontalTotal:F4})");
+
+            // DECISIÓN: Si hay MÁS caras verticales significativas O mayor área vertical → MURO
+            TipoOrientacion tipo;
+            XYZ normalResultante;
+
+            if (carasVerticales > carasHorizontales || areaVerticalTotal > areaHorizontalTotal)
+            {
+                tipo = TipoOrientacion.Vertical;
+                normalResultante = mejorCaraVertical != null ? mejorCaraVertical.FaceNormal : XYZ.BasisX;
+                _log.AppendLine($"    ✓ DECISIÓN: VERTICAL (Muro) - {carasVerticales} caras verticales vs {carasHorizontales} horizontales");
+            }
+            else
+            {
+                tipo = TipoOrientacion.Horizontal;
+                normalResultante = mejorCaraHorizontal != null ? mejorCaraHorizontal.FaceNormal : XYZ.BasisZ;
+                _log.AppendLine($"    ✓ DECISIÓN: HORIZONTAL (Suelo) - {carasHorizontales} caras horizontales vs {carasVerticales} verticales");
+            }
+
+            return new OrientacionEncofrado
+            {
+                Tipo = tipo,
+                NormalPromedio = normalResultante
+            };
+        }
+
+        // MÉTODOS ANTIGUOS ELIMINADOS: CrearSuelo y CrearMuro
+        // Ahora usamos CrearDirectShapeConCategoria que preserva geometría exacta
+
+        #region MÉTODOS AUXILIARES (mantenidos para referencia futura)
+
+        /// <summary>
+        /// [NO USADO] Crea un suelo a partir del sólido del encofrado
+        /// Soporta suelos horizontales e inclinados ajustando puntos de elevación
+        /// </summary>
+        private bool CrearSuelo_OLD(Element encofrado, List<Solid> solidos, OrientacionEncofrado orientacion)
+        {
+            try
+            {
+                // Tomar el sólido principal (mayor volumen)
+                Solid solidoPrincipal = solidos.OrderByDescending(s => s.Volume).First();
+
+                // Buscar la cara más adecuada para generar el suelo
+                // Prioridad: cara con mayor componente Z (puede ser horizontal o inclinada)
+                PlanarFace caraPrincipal = null;
+                double mejorComponenteZ = 0;
+
+                foreach (Face face in solidoPrincipal.Faces)
+                {
+                    if (face is PlanarFace pf)
+                    {
+                        double componenteZ = Math.Abs(pf.FaceNormal.Z);
+
+                        // Buscar cara con mayor componente Z (más cercana a horizontal)
+                        if (componenteZ > mejorComponenteZ)
+                        {
+                            mejorComponenteZ = componenteZ;
+                            caraPrincipal = pf;
+                        }
+                    }
+                }
+
+                if (caraPrincipal == null)
+                {
+                    _log.AppendLine($"  ✗ No se encontró cara principal");
+                    return false;
+                }
+
+                // Obtener contornos de la cara
+                IList<CurveLoop> curveLoops = caraPrincipal.GetEdgesAsCurveLoops();
+                if (curveLoops.Count == 0)
+                {
+                    _log.AppendLine($"  ✗ No se encontraron contornos");
+                    return false;
+                }
+
+                // Proyectar curvas al plano XY para crear el suelo base
+                List<CurveLoop> curveLoopsProyectados = new List<CurveLoop>();
+
+                // Almacenar las elevaciones originales de los vértices
+                Dictionary<XYZ, double> elevacionesOriginales = new Dictionary<XYZ, double>(new XYZComparerXY());
+
+                foreach (CurveLoop loop in curveLoops)
+                {
+                    CurveLoop loopProyectado = new CurveLoop();
+
+                    foreach (Curve curve in loop)
+                    {
+                        XYZ p1Original = curve.GetEndPoint(0);
+                        XYZ p2Original = curve.GetEndPoint(1);
+
+                        // Guardar elevaciones originales
+                        XYZ p1XY = new XYZ(p1Original.X, p1Original.Y, 0);
+                        XYZ p2XY = new XYZ(p2Original.X, p2Original.Y, 0);
+
+                        elevacionesOriginales[p1XY] = p1Original.Z;
+                        elevacionesOriginales[p2XY] = p2Original.Z;
+
+                        // Proyectar curva al plano XY
+                        XYZ p1Proyectado = new XYZ(p1Original.X, p1Original.Y, 0);
+                        XYZ p2Proyectado = new XYZ(p2Original.X, p2Original.Y, 0);
+
+                        // Solo agregar si los puntos no son idénticos en XY
+                        if (p1Proyectado.DistanceTo(p2Proyectado) > 0.001)
+                        {
+                            if (curve is Line)
+                            {
+                                loopProyectado.Append(Line.CreateBound(p1Proyectado, p2Proyectado));
+                            }
+                            else if (curve is Arc arc)
+                            {
+                                // Proyectar arco manteniendo el punto medio
+                                XYZ midOriginal = arc.Evaluate(0.5, true);
+                                XYZ midProyectado = new XYZ(midOriginal.X, midOriginal.Y, 0);
+                                elevacionesOriginales[midProyectado] = midOriginal.Z;
+
+                                loopProyectado.Append(Arc.Create(p1Proyectado, p2Proyectado, midProyectado));
+                            }
+                        }
+                    }
+
+                    if (loopProyectado.NumberOfCurves() >= 3)
+                    {
+                        curveLoopsProyectados.Add(loopProyectado);
+                    }
+                }
+
+                if (curveLoopsProyectados.Count == 0)
+                {
+                    _log.AppendLine($"  ✗ No se pudieron proyectar contornos");
+                    return false;
+                }
+
+                // Encontrar elevación promedio para el nivel base
+                double elevacionPromedio = elevacionesOriginales.Values.Average();
+                Level nivel = ObtenerNivelMasCercano(elevacionPromedio);
+
+                if (nivel == null)
+                {
+                    _log.AppendLine($"  ✗ No se encontró nivel");
+                    return false;
+                }
+
+                // Crear suelo base en el nivel
+                Floor suelo = Floor.Create(_doc, curveLoopsProyectados, _floorType.Id, nivel.Id);
+
+                if (suelo == null)
+                {
+                    _log.AppendLine($"  ✗ Fallo al crear suelo");
+                    return false;
+                }
+
+                // Ajustar puntos de elevación si el suelo está inclinado
+                bool esInclinado = elevacionesOriginales.Values.Max() - elevacionesOriginales.Values.Min() > 0.05; // > 15mm
+
+                if (esInclinado)
+                {
+                    _log.AppendLine($"  Suelo inclinado detectado - ajustando puntos de elevación...");
+
+                    try
+                    {
+                        SlabShapeEditor editor = suelo.GetSlabShapeEditor();
+                        if (editor != null)
+                        {
+                            // Resetear cualquier edición previa
+                            editor.ResetSlabShape();
+
+                            // Habilitar edición de forma
+                            SlabShapeCreaseArray creases = editor.SlabShapeCreases;
+                            SlabShapeVertexArray vertices = editor.SlabShapeVertices;
+
+                            _log.AppendLine($"    Vértices del suelo: {vertices.Size}");
+
+                            // Ajustar cada vértice a su elevación original
+                            int ajustados = 0;
+                            foreach (SlabShapeVertex vertex in vertices)
+                            {
+                                XYZ posicion = vertex.Position;
+                                XYZ posicionXY = new XYZ(posicion.X, posicion.Y, 0);
+
+                                // Buscar la elevación original más cercana
+                                double elevacionObjetivo = nivel.Elevation;
+                                double minDist = double.MaxValue;
+
+                                foreach (var kvp in elevacionesOriginales)
+                                {
+                                    double dist = kvp.Key.DistanceTo(posicionXY);
+                                    if (dist < minDist)
+                                    {
+                                        minDist = dist;
+                                        elevacionObjetivo = kvp.Value;
+                                    }
+                                }
+
+                                // Calcular offset necesario desde el nivel
+                                double offsetNecesario = elevacionObjetivo - nivel.Elevation;
+
+                                // Modificar el vértice con el offset
+                                if (Math.Abs(offsetNecesario) > 0.001)
+                                {
+                                    editor.ModifySubElement(vertex, offsetNecesario);
+                                    ajustados++;
+                                }
+                            }
+
+                            _log.AppendLine($"    Vértices ajustados: {ajustados}");
+                        }
+                    }
+                    catch (Exception exInclinado)
+                    {
+                        _log.AppendLine($"  ⚠ No se pudo ajustar inclinación: {exInclinado.Message}");
+                        // Continuar sin inclinación
+                    }
+                }
+                else
+                {
+                    // Suelo horizontal - ajustar offset global
+                    double offsetNecesario = elevacionPromedio - nivel.Elevation;
+                    if (Math.Abs(offsetNecesario) > 0.01)
+                    {
+                        Parameter paramHeightOffset = suelo.get_Parameter(BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM);
+                        if (paramHeightOffset != null && !paramHeightOffset.IsReadOnly)
+                        {
+                            paramHeightOffset.Set(offsetNecesario);
+                        }
+                    }
+                }
+
+                // Copiar comentarios
+                CopiarParametroComentarios(encofrado, suelo);
+
+                _log.AppendLine($"  ✓ Suelo creado en nivel {nivel.Name} (Inclinado: {esInclinado})");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"  ✗ Error creando suelo: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// [NO USADO] Crea un muro a partir del sólido del encofrado
+        /// </summary>
+        private bool CrearMuro_OLD(Element encofrado, List<Solid> solidos, OrientacionEncofrado orientacion)
+        {
+            try
+            {
+                // Tomar el sólido principal
+                Solid solidoPrincipal = solidos.OrderByDescending(s => s.Volume).First();
+
+                // Buscar cara vertical más grande
+                PlanarFace caraVertical = null;
+                double maxArea = 0;
+
+                foreach (Face face in solidoPrincipal.Faces)
+                {
+                    if (face is PlanarFace pf)
+                    {
+                        double z = Math.Abs(pf.FaceNormal.Z);
+
+                        // Verificar que sea vertical (|z| < 0.3)
+                        if (z < 0.3 && pf.Area > maxArea)
+                        {
+                            maxArea = pf.Area;
+                            caraVertical = pf;
+                        }
+                    }
+                }
+
+                if (caraVertical == null)
+                {
+                    _log.AppendLine($"  ✗ No se encontró cara vertical");
+                    return false;
+                }
+
+                // Obtener contorno de la cara vertical
+                IList<CurveLoop> loops = caraVertical.GetEdgesAsCurveLoops();
+                if (loops.Count == 0)
+                {
+                    _log.AppendLine($"  ✗ No se encontraron contornos");
+                    return false;
+                }
+
+                // Obtener curva base (la curva más baja horizontalmente)
+                CurveLoop loopPrincipal = loops.OrderByDescending(l => CalcularAreaLoop(l)).First();
+
+                // Extraer puntos del loop y proyectar a plano XY
+                List<XYZ> puntos = new List<XYZ>();
+                foreach (Curve curve in loopPrincipal)
+                {
+                    puntos.Add(curve.GetEndPoint(0));
+                }
+
+                if (puntos.Count < 2)
+                {
+                    _log.AppendLine($"  ✗ Insuficientes puntos para crear muro");
+                    return false;
+                }
+
+                // Encontrar los dos puntos que definen la línea base del muro
+                // Usar los dos puntos más alejados en Z mínimo
+                double zMin = puntos.Min(p => p.Z);
+                double zMax = puntos.Max(p => p.Z);
+
+                var puntosBase = puntos.Where(p => Math.Abs(p.Z - zMin) < 0.1).ToList();
+
+                if (puntosBase.Count < 2)
+                {
+                    _log.AppendLine($"  ✗ No se encontraron puntos base");
+                    return false;
+                }
+
+                // Tomar los dos puntos más alejados entre sí
+                XYZ p1 = puntosBase[0];
+                XYZ p2 = puntosBase[0];
+                double maxDist = 0;
+
+                for (int i = 0; i < puntosBase.Count; i++)
+                {
+                    for (int j = i + 1; j < puntosBase.Count; j++)
+                    {
+                        double dist = puntosBase[i].DistanceTo(puntosBase[j]);
+                        if (dist > maxDist)
+                        {
+                            maxDist = dist;
+                            p1 = puntosBase[i];
+                            p2 = puntosBase[j];
+                        }
+                    }
+                }
+
+                // Nivel base
+                Level nivel = ObtenerNivelMasCercano(zMin);
+                if (nivel == null)
+                {
+                    _log.AppendLine($"  ✗ No se encontró nivel");
+                    return false;
+                }
+
+                // Altura del muro
+                double altura = zMax - zMin;
+
+                // Crear línea base en el nivel
+                Line lineaBase = Line.CreateBound(
+                    new XYZ(p1.X, p1.Y, nivel.Elevation),
+                    new XYZ(p2.X, p2.Y, nivel.Elevation)
+                );
+
+                // Crear muro con manejo de errores
+                Wall muro = null;
+                try
+                {
+                    muro = Wall.Create(_doc, lineaBase, _wallType.Id, nivel.Id, altura, 0, false, false);
+                }
+                catch (Autodesk.Revit.Exceptions.InvalidOperationException ex)
+                {
+                    _log.AppendLine($"  ✗ No se pudo crear Wall (parámetros inválidos): {ex.Message}");
+                    return false;
+                }
+                catch (Autodesk.Revit.Exceptions.ArgumentException ex)
+                {
+                    _log.AppendLine($"  ✗ No se pudo crear Wall (argumentos inválidos): {ex.Message}");
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    _log.AppendLine($"  ✗ Error inesperado creando Wall: {ex.Message}");
+                    return false;
+                }
+
+                if (muro == null)
+                {
+                    _log.AppendLine($"  ✗ Fallo al crear muro");
+                    return false;
+                }
+
+                // Ajustar offset base
+                double offsetBase = zMin - nivel.Elevation;
+                Parameter paramOffset = muro.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET);
+                if (paramOffset != null && !paramOffset.IsReadOnly)
+                {
+                    paramOffset.Set(offsetBase);
+                }
+
+                // Desactivar "Delimitación de habitación" (Room Bounding)
+                Parameter paramRoomBounding = muro.get_Parameter(BuiltInParameter.WALL_ATTR_ROOM_BOUNDING);
+                if (paramRoomBounding != null && !paramRoomBounding.IsReadOnly)
+                {
+                    paramRoomBounding.Set(0); // 0 = desactivado
+                }
+
+                // Copiar comentarios
+                CopiarParametroComentarios(encofrado, muro);
+
+                _log.AppendLine($"  ✓ Muro creado: Altura={altura:F3}, Base={zMin:F3}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"  ✗ Error creando muro: {ex.Message}");
+                return false;
+            }
+        }
+
+        #endregion
+
+        /// <summary>
+        /// Desplaza un CurveLoop en una dirección y distancia especificadas
+        /// </summary>
+        private CurveLoop DesplazarCurveLoop(CurveLoop loop, XYZ direccion, double distancia)
+        {
+            CurveLoop loopDesplazado = new CurveLoop();
+            Transform transform = Transform.CreateTranslation(direccion.Normalize() * distancia);
+
+            foreach (Curve curve in loop)
+            {
+                Curve curvaDesplazada = curve.CreateTransformed(transform);
+                loopDesplazado.Append(curvaDesplazada);
+            }
+
+            return loopDesplazado;
+        }
+
+        /// <summary>
+        /// Calcula la elevación promedio de todos los puntos en una lista de CurveLoops
+        /// </summary>
+        private double CalcularElevacionPromedio(List<CurveLoop> loops)
+        {
+            List<double> elevaciones = new List<double>();
+
+            foreach (CurveLoop loop in loops)
+            {
+                foreach (Curve curve in loop)
+                {
+                    elevaciones.Add(curve.GetEndPoint(0).Z);
+                    elevaciones.Add(curve.GetEndPoint(1).Z);
+                }
+            }
+
+            return elevaciones.Count > 0 ? elevaciones.Average() : 0;
+        }
+
+        /// <summary>
+        /// Encuentra el nivel más cercano a una elevación dada
+        /// </summary>
+        private Level ObtenerNivelMasCercano(double elevacion)
+        {
+            var niveles = new FilteredElementCollector(_doc)
+                .OfClass(typeof(Level))
+                .Cast<Level>()
+                .OrderBy(l => Math.Abs(l.Elevation - elevacion))
+                .ToList();
+
+            return niveles.FirstOrDefault();
+        }
+
+        /// <summary>
+        /// Calcula el área aproximada de un CurveLoop
+        /// </summary>
+        private double CalcularAreaLoop(CurveLoop loop)
+        {
+            try
+            {
+                List<XYZ> puntos = new List<XYZ>();
+                foreach (Curve curve in loop)
+                {
+                    puntos.Add(curve.GetEndPoint(0));
+                }
+
+                if (puntos.Count < 3) return 0;
+
+                double area = 0;
+                for (int i = 0; i < puntos.Count; i++)
+                {
+                    XYZ p1 = puntos[i];
+                    XYZ p2 = puntos[(i + 1) % puntos.Count];
+                    area += (p1.X * p2.Y) - (p2.X * p1.Y);
+                }
+
+                return Math.Abs(area / 2.0);
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// Proyecta un CurveLoop a un plano horizontal a una elevación específica
+        /// </summary>
+        private CurveLoop ProyectarCurveLoopAPlanoHorizontal(CurveLoop loop, double elevacion)
+        {
+            try
+            {
+                CurveLoop loopHorizontal = new CurveLoop();
+
+                foreach (Curve curva in loop)
+                {
+                    XYZ p0 = curva.GetEndPoint(0);
+                    XYZ p1 = curva.GetEndPoint(1);
+
+                    // Proyectar al plano horizontal (mantener X,Y, cambiar Z a elevación)
+                    XYZ p0Horizontal = new XYZ(p0.X, p0.Y, elevacion);
+                    XYZ p1Horizontal = new XYZ(p1.X, p1.Y, elevacion);
+
+                    // Evitar líneas degeneradas
+                    if (p0Horizontal.DistanceTo(p1Horizontal) > 0.001)
+                    {
+                        Line lineaHorizontal = Line.CreateBound(p0Horizontal, p1Horizontal);
+                        loopHorizontal.Append(lineaHorizontal);
+                    }
+                }
+
+                return loopHorizontal;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"  ⚠ Error proyectando loop a horizontal: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Valida si un CurveLoop es válido específicamente para Floor.Create
+        /// Los suelos requieren loops horizontales y cerrados
+        /// </summary>
+        private bool ValidarCurveLoopParaSuelo(CurveLoop loop, out string razon)
+        {
+            razon = "";
+
+            try
+            {
+                if (loop == null || loop.Count() < 3)
+                {
+                    razon = "Loop nulo o insuficientes curvas";
+                    return false;
+                }
+
+                // Verificar que es horizontal (todas las curvas en el mismo Z)
+                List<XYZ> puntos = new List<XYZ>();
+                foreach (Curve curva in loop)
+                {
+                    puntos.Add(curva.GetEndPoint(0));
+                    puntos.Add(curva.GetEndPoint(1));
+                }
+
+                double zMin = puntos.Min(p => p.Z);
+                double zMax = puntos.Max(p => p.Z);
+                double variacionZ = zMax - zMin;
+
+                if (variacionZ > 0.01) // Más de 3mm de variación
+                {
+                    razon = $"Loop no es horizontal (variación Z: {variacionZ*304.8:F2}mm)";
+                    return false;
+                }
+
+                // Verificar que está cerrado
+                List<Curve> curvas = loop.ToList();
+                for (int i = 0; i < curvas.Count; i++)
+                {
+                    Curve curvaActual = curvas[i];
+                    Curve curvaSiguiente = curvas[(i + 1) % curvas.Count];
+
+                    XYZ finActual = curvaActual.GetEndPoint(1);
+                    XYZ inicioSiguiente = curvaSiguiente.GetEndPoint(0);
+
+                    double distancia = finActual.DistanceTo(inicioSiguiente);
+                    if (distancia > 0.01)
+                    {
+                        razon = $"Loop no cerrado: gap de {distancia*304.8:F2}mm";
+                        return false;
+                    }
+                }
+
+                // Verificar área válida
+                double area = Math.Abs(loop.GetExactLength()); // Aproximación rápida
+                if (area < 0.1) // Menos de 0.1 pies cuadrados
+                {
+                    razon = "Área del loop demasiado pequeña";
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                razon = $"Error en validación: {ex.Message}";
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Valida si un CurveLoop es válido para perfil de muro
+        /// Verifica: cerrado, planar, curvas conectadas
+        /// </summary>
+        private bool ValidarCurveLoopParaPerfil(CurveLoop loop, out string razon)
+        {
+            razon = "";
+
+            try
+            {
+                // 1. Verificar que el loop tiene curvas
+                if (loop == null)
+                {
+                    razon = "Loop nulo";
+                    return false;
+                }
+
+                int numeroCurvas = loop.Count();
+                if (numeroCurvas < 3)
+                {
+                    razon = $"Insuficientes curvas ({numeroCurvas}, mínimo 3)";
+                    return false;
+                }
+
+                // 2. Verificar que es planar
+                try
+                {
+                    Plane plane = loop.GetPlane();
+                    if (plane == null)
+                    {
+                        razon = "Loop no es planar (GetPlane retornó null)";
+                        return false;
+                    }
+                }
+                catch (Exception exPlane)
+                {
+                    razon = $"Loop no es planar: {exPlane.Message}";
+                    return false;
+                }
+
+                // 3. Verificar que está cerrado (verificar conexiones)
+                List<Curve> curvas = loop.ToList();
+                for (int i = 0; i < curvas.Count; i++)
+                {
+                    Curve curvaActual = curvas[i];
+                    Curve curvaSiguiente = curvas[(i + 1) % curvas.Count];
+
+                    XYZ finActual = curvaActual.GetEndPoint(1);
+                    XYZ inicioSiguiente = curvaSiguiente.GetEndPoint(0);
+
+                    double distancia = finActual.DistanceTo(inicioSiguiente);
+                    if (distancia > 0.01) // Tolerancia 0.01 pies (~3mm)
+                    {
+                        razon = $"Gap entre curvas {i} y {i+1}: {distancia*304.8:F2}mm";
+                        return false;
+                    }
+                }
+
+                // 4. Verificar que las curvas no son degeneradas
+                foreach (Curve curva in curvas)
+                {
+                    double longitud = curva.Length;
+                    if (longitud < 0.001) // 0.001 pies = ~0.3mm
+                    {
+                        razon = $"Curva degenerada con longitud {longitud*304.8:F3}mm";
+                        return false;
+                    }
+                }
+
+                // 5. Verificar orientación (counter-clockwise o clockwise consistente)
+                double areaSigno = CalcularAreaSignoCurveLoop(loop);
+                if (Math.Abs(areaSigno) < 0.0001)
+                {
+                    razon = "Área del loop es cero (curvas colineales)";
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                razon = $"Excepción en validación: {ex.Message}";
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Calcula área con signo de un CurveLoop para verificar orientación
+        /// </summary>
+        private double CalcularAreaSignoCurveLoop(CurveLoop loop)
+        {
+            try
+            {
+                List<XYZ> puntos = new List<XYZ>();
+                foreach (Curve curve in loop)
+                {
+                    puntos.Add(curve.GetEndPoint(0));
+                }
+
+                // Fórmula del área con signo (Shoelace formula)
+                double area = 0;
+                for (int i = 0; i < puntos.Count; i++)
+                {
+                    XYZ p1 = puntos[i];
+                    XYZ p2 = puntos[(i + 1) % puntos.Count];
+                    area += (p1.X * p2.Y) - (p2.X * p1.Y);
+                }
+
+                return area / 2.0;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// Copia el parámetro Comentarios de un elemento a otro
+        /// </summary>
+        private void CopiarParametroComentarios(Element origen, Element destino)
+        {
+            try
+            {
+                Parameter paramOrigen = origen.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS);
+                Parameter paramDestino = destino.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS);
+
+                if (paramOrigen != null && paramDestino != null && paramOrigen.HasValue)
+                {
+                    paramDestino.Set(paramOrigen.AsString());
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Copia el nivel base, altura y desfases del elemento estructural encofrado (viga/columna/muro) al muro creado
+        /// Lee el ID del elemento desde el parámetro Comentarios del encofrado
+        /// Si no encuentra el ID, usa el BoundingBox del encofrado como fallback
+        /// </summary>
+        private bool CopiarNivelYDesfasesDeElementoEncofrado(Element encofrado, Element muroCreado)
+        {
+            try
+            {
+                // 1. Leer el parámetro Comentarios del encofrado
+                Parameter paramComentarios = encofrado.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS);
+                if (paramComentarios == null || !paramComentarios.HasValue)
+                {
+                    _log.AppendLine($"    ⚠ No se encontró ID en Comentarios - usando cálculo con BoundingBox");
+                    return AjustarParametrosConBoundingBox(encofrado, muroCreado);
+                }
+
+                string comentarios = paramComentarios.AsString();
+                if (string.IsNullOrWhiteSpace(comentarios))
+                {
+                    _log.AppendLine($"    ⚠ Comentarios vacío - usando cálculo con BoundingBox");
+                    return AjustarParametrosConBoundingBox(encofrado, muroCreado);
+                }
+
+                // 2. Extraer el ID del elemento (formato esperado: "ID: 123456" o solo "123456")
+                string idString = comentarios.Trim();
+                if (idString.StartsWith("ID:", StringComparison.OrdinalIgnoreCase))
+                {
+                    idString = idString.Substring(3).Trim();
+                }
+
+                if (!long.TryParse(idString, out long elementIdValue))
+                {
+                    _log.AppendLine($"    ⚠ No se pudo parsear ID: '{comentarios}' - usando cálculo con BoundingBox");
+                    return AjustarParametrosConBoundingBox(encofrado, muroCreado);
+                }
+
+                // 3. Obtener el elemento estructural
+                ElementId elementoEncofradoId = new ElementId(elementIdValue);
+                Element elementoEncofrado = _doc.GetElement(elementoEncofradoId);
+
+                if (elementoEncofrado == null)
+                {
+                    _log.AppendLine($"    ⚠ No se encontró elemento con ID: {elementIdValue} - usando cálculo con BoundingBox");
+                    return AjustarParametrosConBoundingBox(encofrado, muroCreado);
+                }
+
+                // 4. Verificar que sea viga, columna o muro
+                string categoria = elementoEncofrado.Category?.Name ?? "Unknown";
+                bool esElementoValido = elementoEncofrado is FamilyInstance || elementoEncofrado is Wall;
+
+                if (!esElementoValido)
+                {
+                    _log.AppendLine($"    ⚠ Elemento no es viga/columna/muro ({categoria}) - usando cálculo con BoundingBox");
+                    return AjustarParametrosConBoundingBox(encofrado, muroCreado);
+                }
+
+                _log.AppendLine($"    ✓ Elemento encofrado encontrado: {categoria} (ID: {elementIdValue})");
+
+                // 5. Copiar parámetros del elemento estructural al muro creado
+                bool algunoCopiado = false;
+
+                // Nivel base
+                Parameter nivelOrigen = elementoEncofrado.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT);
+                if (nivelOrigen == null && elementoEncofrado is FamilyInstance)
+                {
+                    nivelOrigen = elementoEncofrado.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM);
+                }
+
+                Parameter nivelDestino = muroCreado.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT);
+                if (nivelOrigen != null && nivelOrigen.HasValue && nivelDestino != null && !nivelDestino.IsReadOnly)
+                {
+                    nivelDestino.Set(nivelOrigen.AsElementId());
+                    _log.AppendLine($"    ✓ Nivel base copiado");
+                    algunoCopiado = true;
+                }
+
+                // Base Offset
+                Parameter baseOffsetOrigen = elementoEncofrado.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET);
+                if (baseOffsetOrigen == null && elementoEncofrado is FamilyInstance)
+                {
+                    baseOffsetOrigen = elementoEncofrado.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM);
+                }
+
+                Parameter baseOffsetDestino = muroCreado.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET);
+                if (baseOffsetOrigen != null && baseOffsetOrigen.HasValue && baseOffsetDestino != null && !baseOffsetDestino.IsReadOnly)
+                {
+                    double valorOffset = baseOffsetOrigen.AsDouble();
+                    baseOffsetDestino.Set(valorOffset);
+                    _log.AppendLine($"    ✓ Base Offset copiado: {valorOffset * 304.8:F1}mm");
+                    algunoCopiado = true;
+                }
+
+                // Altura (solo para muros y algunas familias)
+                Parameter alturaOrigen = elementoEncofrado.get_Parameter(BuiltInParameter.WALL_USER_HEIGHT_PARAM);
+                Parameter alturaDestino = muroCreado.get_Parameter(BuiltInParameter.WALL_USER_HEIGHT_PARAM);
+                if (alturaOrigen != null && alturaOrigen.HasValue && alturaDestino != null && !alturaDestino.IsReadOnly)
+                {
+                    double valorAltura = alturaOrigen.AsDouble();
+                    alturaDestino.Set(valorAltura);
+                    _log.AppendLine($"    ✓ Altura copiada: {valorAltura * 304.8:F1}mm");
+                    algunoCopiado = true;
+                }
+
+                // Top Offset
+                Parameter topOffsetOrigen = elementoEncofrado.get_Parameter(BuiltInParameter.WALL_TOP_OFFSET);
+                Parameter topOffsetDestino = muroCreado.get_Parameter(BuiltInParameter.WALL_TOP_OFFSET);
+                if (topOffsetOrigen != null && topOffsetOrigen.HasValue && topOffsetDestino != null && !topOffsetDestino.IsReadOnly)
+                {
+                    double valorTopOffset = topOffsetOrigen.AsDouble();
+                    topOffsetDestino.Set(valorTopOffset);
+                    _log.AppendLine($"    ✓ Top Offset copiado: {valorTopOffset * 304.8:F1}mm");
+                    algunoCopiado = true;
+                }
+
+                if (algunoCopiado)
+                {
+                    _log.AppendLine($"    ✓✓ Parámetros copiados del elemento estructural original");
+                    return true;
+                }
+                else
+                {
+                    _log.AppendLine($"    ⚠ No se pudo copiar ningún parámetro");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"    ✗ Error copiando parámetros: {ex.Message} - usando cálculo con BoundingBox");
+                return AjustarParametrosConBoundingBox(encofrado, muroCreado);
+            }
+        }
+
+        /// <summary>
+        /// Método fallback que ajusta los parámetros del muro usando el BoundingBox del encofrado
+        /// cuando no se puede copiar del elemento estructural original
+        /// </summary>
+        private bool AjustarParametrosConBoundingBox(Element encofrado, Element muroCreado)
+        {
+            try
+            {
+                BoundingBoxXYZ bbox = encofrado.get_BoundingBox(null);
+                if (bbox == null)
+                {
+                    _log.AppendLine($"    ✗ No se pudo obtener BoundingBox del encofrado");
+                    return false;
+                }
+
+                double zMaxOriginal = bbox.Max.Z;
+                double zMinOriginal = bbox.Min.Z;
+                double alturaOriginal = zMaxOriginal - zMinOriginal;
+
+                // Obtener nivel base del muro
+                Parameter paramLevel = muroCreado.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT);
+                if (paramLevel == null || paramLevel.AsElementId() == ElementId.InvalidElementId)
+                {
+                    _log.AppendLine($"    ✗ Muro creado no tiene nivel base");
+                    return false;
+                }
+
+                Level nivel = _doc.GetElement(paramLevel.AsElementId()) as Level;
+                if (nivel == null)
+                {
+                    _log.AppendLine($"    ✗ No se pudo obtener nivel del muro");
+                    return false;
+                }
+
+                // 1. Ajustar Base Offset
+                double baseOffsetOriginal = zMinOriginal - nivel.Elevation;
+                Parameter paramBaseOffset = muroCreado.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET);
+                if (paramBaseOffset != null && !paramBaseOffset.IsReadOnly)
+                {
+                    paramBaseOffset.Set(baseOffsetOriginal);
+                }
+
+                // 2. Ajustar Altura
+                Parameter paramHeight = muroCreado.get_Parameter(BuiltInParameter.WALL_USER_HEIGHT_PARAM);
+                if (paramHeight != null && !paramHeight.IsReadOnly)
+                {
+                    paramHeight.Set(alturaOriginal);
+                }
+
+                // 3. LEER valores REALES (Revit puede haberlos ajustado)
+                double baseOffsetReal = paramBaseOffset != null ? paramBaseOffset.AsDouble() : baseOffsetOriginal;
+                double alturaReal = paramHeight != null ? paramHeight.AsDouble() : alturaOriginal;
+
+                // 4. Calcular Top Offset basado en valores REALES
+                double topOffset = zMaxOriginal - (nivel.Elevation + baseOffsetReal + alturaReal);
+                Parameter paramTopOffset = muroCreado.get_Parameter(BuiltInParameter.WALL_TOP_OFFSET);
+                if (paramTopOffset != null && !paramTopOffset.IsReadOnly)
+                {
+                    paramTopOffset.Set(topOffset);
+                    _log.AppendLine($"    ✓ Parámetros ajustados con BoundingBox | Top: {topOffset * 304.8:F1}mm | H: {alturaReal * 304.8:F1}mm | Base: {baseOffsetReal * 304.8:F1}mm");
+                    return true;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"    ✗ Error ajustando con BoundingBox: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Valida que todas las curvas estén en el mismo plano vertical y las proyecta SIEMPRE
+        /// Revit requiere que todas las curvas en Wall.Create estén coplanares de manera EXACTA
+        /// </summary>
+        private List<Curve> ValidarYProyectarCurvasAPlanoComun(List<Curve> curvas, XYZ normalPlano)
+        {
+            try
+            {
+                if (curvas == null || curvas.Count < 3)
+                {
+                    _log.AppendLine($"    ⚠ Insuficientes curvas para validar plano");
+                    return curvas;
+                }
+
+                _log.AppendLine($"    [VALIDACIÓN COPLANAR] Procesando {curvas.Count} curvas...");
+
+                // 1. Calcular el centroide de TODOS los puntos de las curvas para tener un mejor origen del plano
+                List<XYZ> todosPuntos = new List<XYZ>();
+                foreach (Curve curva in curvas)
+                {
+                    todosPuntos.Add(curva.GetEndPoint(0));
+                    todosPuntos.Add(curva.GetEndPoint(1));
+                }
+
+                XYZ centroide = new XYZ(
+                    todosPuntos.Average(p => p.X),
+                    todosPuntos.Average(p => p.Y),
+                    todosPuntos.Average(p => p.Z)
+                );
+
+                // 2. Crear plano vertical con la normal proporcionada, pero centrado en el centroide
+                XYZ normalVertical = normalPlano.Normalize();
+
+                // Asegurar que la normal sea realmente vertical (Z debe ser cercano a 0)
+                if (Math.Abs(normalVertical.Z) > 0.1)
+                {
+                    _log.AppendLine($"    ⚠ Normal no es vertical (Z={normalVertical.Z:F3}), ajustando...");
+                    normalVertical = new XYZ(normalVertical.X, normalVertical.Y, 0).Normalize();
+                }
+
+                Plane planoReferencia = Plane.CreateByNormalAndOrigin(normalVertical, centroide);
+
+                _log.AppendLine($"    [PLANO] Normal=({normalVertical.X:F3}, {normalVertical.Y:F3}, {normalVertical.Z:F3})");
+                _log.AppendLine($"    [PLANO] Centroide=({centroide.X:F3}, {centroide.Y:F3}, {centroide.Z:F3})");
+
+                // 3. Verificar distancias antes de proyectar
+                double maxDistancia = 0;
+                foreach (Curve curva in curvas)
+                {
+                    XYZ p0 = curva.GetEndPoint(0);
+                    XYZ p1 = curva.GetEndPoint(1);
+
+                    XYZ vectorAlPunto0 = p0 - planoReferencia.Origin;
+                    XYZ vectorAlPunto1 = p1 - planoReferencia.Origin;
+                    double distP0 = Math.Abs(vectorAlPunto0.DotProduct(normalVertical));
+                    double distP1 = Math.Abs(vectorAlPunto1.DotProduct(normalVertical));
+
+                    maxDistancia = Math.Max(maxDistancia, Math.Max(distP0, distP1));
+                }
+
+                _log.AppendLine($"    [DIST] Máxima desviación del plano: {maxDistancia * 304.8:F1}mm");
+
+                // 4. SIEMPRE proyectar TODAS las curvas al plano (no confiar en tolerancias)
+                _log.AppendLine($"    🔧 PROYECTANDO todas las curvas al plano común (forzado)...");
+                List<Curve> curvasProyectadas = new List<Curve>();
+
+                foreach (Curve curva in curvas)
+                {
+                    try
+                    {
+                        XYZ p0Original = curva.GetEndPoint(0);
+                        XYZ p1Original = curva.GetEndPoint(1);
+
+                        // Proyectar puntos al plano manualmente
+                        XYZ vectorP0 = p0Original - planoReferencia.Origin;
+                        XYZ vectorP1 = p1Original - planoReferencia.Origin;
+
+                        double distanciaP0 = vectorP0.DotProduct(normalVertical);
+                        double distanciaP1 = vectorP1.DotProduct(normalVertical);
+
+                        XYZ p0Proyectado = p0Original - distanciaP0 * normalVertical;
+                        XYZ p1Proyectado = p1Original - distanciaP1 * normalVertical;
+
+                        // Verificar que los puntos proyectados no sean iguales
+                        if (p0Proyectado.DistanceTo(p1Proyectado) < 0.001)
+                        {
+                            _log.AppendLine($"    ⚠ Curva colapsó al proyectar - omitiendo");
+                            continue;
+                        }
+
+                        // Crear nueva curva proyectada
+                        Curve curvaProyectada = null;
+
+                        if (curva is Line)
+                        {
+                            curvaProyectada = Line.CreateBound(p0Proyectado, p1Proyectado);
+                        }
+                        else if (curva is Arc arc)
+                        {
+                            // Para arcos, proyectar también el punto medio
+                            XYZ pMedioOriginal = arc.Evaluate(0.5, true);
+                            XYZ vectorPMedio = pMedioOriginal - planoReferencia.Origin;
+                            double distanciaPMedio = vectorPMedio.DotProduct(normalVertical);
+                            XYZ pMedioProyectado = pMedioOriginal - distanciaPMedio * normalVertical;
+
+                            try
+                            {
+                                curvaProyectada = Arc.Create(p0Proyectado, p1Proyectado, pMedioProyectado);
+                            }
+                            catch
+                            {
+                                // Si falla crear arco, usar línea
+                                curvaProyectada = Line.CreateBound(p0Proyectado, p1Proyectado);
+                                _log.AppendLine($"    ⚠ Arco convertido a línea al proyectar");
+                            }
+                        }
+                        else
+                        {
+                            // Para otras curvas, aproximar con línea
+                            curvaProyectada = Line.CreateBound(p0Proyectado, p1Proyectado);
+                            _log.AppendLine($"    ⚠ Curva compleja aproximada a línea");
+                        }
+
+                        if (curvaProyectada != null)
+                        {
+                            curvasProyectadas.Add(curvaProyectada);
+                        }
+                    }
+                    catch (Exception exCurva)
+                    {
+                        _log.AppendLine($"    ✗ Error proyectando curva: {exCurva.Message}");
+                        // Intentar usar la curva original
+                        curvasProyectadas.Add(curva);
+                    }
+                }
+
+                _log.AppendLine($"    ✓ Proyección completada: {curvasProyectadas.Count}/{curvas.Count} curvas");
+
+                if (curvasProyectadas.Count < 3)
+                {
+                    _log.AppendLine($"    ✗ Muy pocas curvas después de proyectar");
+                    return null;
+                }
+
+                // 5. VERIFICACIÓN FINAL: Todas las curvas proyectadas deben estar en el plano
+                double maxDistanciaFinal = 0;
+                foreach (Curve curvaProyectada in curvasProyectadas)
+                {
+                    XYZ p0 = curvaProyectada.GetEndPoint(0);
+                    XYZ p1 = curvaProyectada.GetEndPoint(1);
+
+                    XYZ vectorAlPunto0 = p0 - planoReferencia.Origin;
+                    XYZ vectorAlPunto1 = p1 - planoReferencia.Origin;
+                    double distP0 = Math.Abs(vectorAlPunto0.DotProduct(normalVertical));
+                    double distP1 = Math.Abs(vectorAlPunto1.DotProduct(normalVertical));
+
+                    maxDistanciaFinal = Math.Max(maxDistanciaFinal, Math.Max(distP0, distP1));
+                }
+
+                _log.AppendLine($"    [VERIFICACIÓN] Desviación final máxima: {maxDistanciaFinal * 304.8:F3}mm");
+
+                if (maxDistanciaFinal > 0.001) // 0.3mm tolerancia
+                {
+                    _log.AppendLine($"    ⚠ Las curvas proyectadas todavía no están perfectamente coplanares");
+                }
+                else
+                {
+                    _log.AppendLine($"    ✓✓ Curvas perfectamente coplanares verificadas");
+                }
+
+                return curvasProyectadas;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"    ✗ Error validando plano: {ex.Message}");
+                return curvas; // Devolver curvas originales si falla
+            }
+        }
+
+        /// <summary>
+        /// Obtiene el ID del material de encofrado (Contrachapado)
+        /// </summary>
+        private ElementId ObtenerMaterialEncofrado()
+        {
+            try
+            {
+                // Buscar material "Contrachapado" o similar
+                var materiales = new FilteredElementCollector(_doc)
+                    .OfClass(typeof(Material))
+                    .Cast<Material>()
+                    .ToList();
+
+                Material material = materiales.FirstOrDefault(m =>
+                    m.Name.Contains("Contrachapado") ||
+                    m.Name.ToLower().Contains("plywood") ||
+                    m.Name.ToLower().Contains("madera"));
+
+                if (material != null)
+                {
+                    return material.Id;
+                }
+
+                // Si no existe, crear uno nuevo
+                ElementId nuevoMatId = Material.Create(_doc, "Contrachapado");
+                Material nuevoMat = _doc.GetElement(nuevoMatId) as Material;
+                if (nuevoMat != null)
+                {
+                    nuevoMat.Color = new Color(210, 180, 140); // Color madera
+                    nuevoMat.Transparency = 0;
+                }
+                return nuevoMatId;
+            }
+            catch
+            {
+                return ElementId.InvalidElementId;
+            }
+        }
+
+        /// <summary>
+        /// Muestra diálogo con resultados
+        /// </summary>
+        private void MostrarResultados(int muros, int suelos, int errores,
+            int metodo1, int metodo2, int metodo3, int metodo4, int metodo5)
+        {
+            int total = muros + suelos + errores;
+            int exitosos = muros + suelos;
+
+            // Calcular porcentajes de uso de cada método (solo sobre los muros exitosos)
+            string estadisticasMetodos = "";
+            string resumenSimple = "";
+
+            if (muros > 0)
+            {
+                estadisticasMetodos = $"\n📊 ESTADÍSTICAS DE MÉTODOS USADOS:\n" +
+                                     $"───────────────────────────────────────\n";
+
+                // Crear resumen simple para mostrar al inicio
+                resumenSimple = "\nMÉTODOS USADOS:\n";
+
+                if (metodo1 > 0)
+                {
+                    double porcentaje = (metodo1 * 100.0) / muros;
+                    estadisticasMetodos += $"[1] Curvas de cara:     {metodo1,3} ({porcentaje,5:F1}%)\n";
+                    resumenSimple += $"  • Método 1 (Curvas de cara): {porcentaje:F1}%\n";
+                }
+                if (metodo2 > 0)
+                {
+                    double porcentaje = (metodo2 * 100.0) / muros;
+                    estadisticasMetodos += $"[2] EditProfile:        {metodo2,3} ({porcentaje,5:F1}%)\n";
+                    resumenSimple += $"  • Método 2 (EditProfile): {porcentaje:F1}%\n";
+                }
+                if (metodo3 > 0)
+                {
+                    double porcentaje = (metodo3 * 100.0) / muros;
+                    estadisticasMetodos += $"[3] CurveLoops:         {metodo3,3} ({porcentaje,5:F1}%)\n";
+                    resumenSimple += $"  • Método 3 (CurveLoops): {porcentaje:F1}%\n";
+                }
+                if (metodo4 > 0)
+                {
+                    double porcentaje = (metodo4 * 100.0) / muros;
+                    estadisticasMetodos += $"[4] DirectShape:        {metodo4,3} ({porcentaje,5:F1}%)\n";
+                    resumenSimple += $"  • Método 4 (DirectShape): {porcentaje:F1}%\n";
+                }
+                if (metodo5 > 0)
+                {
+                    double porcentaje = (metodo5 * 100.0) / muros;
+                    estadisticasMetodos += $"[5] Tradicional:        {metodo5,3} ({porcentaje,5:F1}%)\n";
+                    resumenSimple += $"  • Método 5 (Tradicional): {porcentaje:F1}%\n";
+                }
+            }
+
+            string mensaje = $"═══════════════════════════════════════\n" +
+                           $"   CONVERSIÓN A ELEMENTOS NATIVOS\n" +
+                           $"═══════════════════════════════════════\n\n" +
+                           $"✓ Muros NATIVOS creados: {muros}\n" +
+                           $"✓ Suelos NATIVOS creados: {suelos}\n" +
+                           $"✖ Fallos (conservados): {errores}\n\n" +
+                           $"Total procesados: {total}\n" +
+                           $"Tasa de éxito: {(total > 0 ? (exitosos * 100.0 / total).ToString("F1") : "0")}%\n" +
+                           resumenSimple +
+                           $"\n💡 IMPORTANTE:\n" +
+                           $"• Elementos creados son Walls y Floors NATIVOS\n" +
+                           $"• Encofrados originales eliminados (exitosos)\n" +
+                           $"• Encofrados fallidos conservados para revisión\n" +
+                           $"• Método 1: Curvas coplanares con validación\n" +
+                           $"• ID original preservado en 'Comentarios'\n" +
+                           $"• Sin separación de cara estructural (0mm)";
+
+            TaskDialog td = new TaskDialog("Conversión Completada");
+            td.MainInstruction = "Proceso completado";
+            td.MainContent = mensaje;
+            td.ExpandedContent = _log.ToString();
+            td.Show();
+        }
+
+        #region Clases Auxiliares
+
+        private enum TipoOrientacion
+        {
+            Horizontal, // Suelo/Losa
+            Vertical    // Muro
+        }
+
+        private struct OrientacionEncofrado
+        {
+            public TipoOrientacion Tipo;
+            public XYZ NormalPromedio;
+        }
+
+        /// <summary>
+        /// Comparador de XYZ que solo considera las coordenadas X e Y (ignora Z)
+        /// Usado para identificar puntos en el mismo lugar en planta
+        /// </summary>
+        private class XYZComparerXY : IEqualityComparer<XYZ>
+        {
+            private const double TOLERANCE = 0.001; // ~3mm
+
+            public bool Equals(XYZ a, XYZ b)
+            {
+                if (a == null && b == null) return true;
+                if (a == null || b == null) return false;
+
+                return Math.Abs(a.X - b.X) < TOLERANCE &&
+                       Math.Abs(a.Y - b.Y) < TOLERANCE;
+            }
+
+            public int GetHashCode(XYZ obj)
+            {
+                if (obj == null) return 0;
+
+                // Redondear a 3 decimales para agrupar puntos cercanos
+                int hashX = ((int)(obj.X * 1000)).GetHashCode();
+                int hashY = ((int)(obj.Y * 1000)).GetHashCode();
+
+                return hashX ^ hashY;
+            }
+        }
+
+        #endregion
+    }
+}

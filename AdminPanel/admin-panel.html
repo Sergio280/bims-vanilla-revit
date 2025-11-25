@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIMS VANILLA - Panel de Administración de Licencias</title>
+    <link rel="stylesheet" href="admin-panel.css">
+</head>
+<body>
+    <!-- ============================== -->
+    <!-- PANTALLA DE LOGIN -->
+    <!-- ============================== -->
+    <div id="loginScreen" class="screen">
+        <div class="login-container">
+            <div class="login-header">
+                <h1>🔐 BIMS VANILLA</h1>
+                <h2>Panel de Administración</h2>
+            </div>
+            <div class="login-form">
+                <input type="email" id="adminEmail" placeholder="Email del administrador" required>
+                <input type="password" id="adminPassword" placeholder="Contraseña" required>
+                <button id="loginBtn" class="btn-primary">Iniciar Sesión</button>
+                <div id="loginError" class="error-message"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================== -->
+    <!-- PANEL PRINCIPAL -->
+    <!-- ============================== -->
+    <div id="adminPanel" class="screen hidden">
+        <!-- HEADER -->
+        <header class="panel-header">
+            <div class="header-left">
+                <h1>📊 BIMS VANILLA - Administrador de Licencias</h1>
+            </div>
+            <div class="header-right">
+                <span id="adminUserInfo" class="admin-info"></span>
+                <button id="logoutBtn" class="btn-secondary">Cerrar Sesión</button>
+            </div>
+        </header>
+
+        <!-- CONTROLES Y FILTROS -->
+        <div class="controls-section">
+            <div class="search-box">
+                <input type="text" id="searchInput" placeholder="🔍 Buscar por email, nombre, License ID...">
+            </div>
+
+            <div class="filter-buttons">
+                <button class="filter-btn active" data-filter="all">Todas (<span id="countAll">0</span>)</button>
+                <button class="filter-btn" data-filter="active">✅ Activas (<span id="countActive">0</span>)</button>
+                <button class="filter-btn" data-filter="expired">❌ Expiradas (<span id="countExpired">0</span>)</button>
+                <button class="filter-btn" data-filter="trial">🧪 Trial (<span id="countTrial">0</span>)</button>
+            </div>
+
+            <div class="action-buttons">
+                <button id="refreshBtn" class="btn-action">🔄 Actualizar</button>
+            </div>
+        </div>
+
+        <!-- ESTADÍSTICAS -->
+        <div class="stats-section">
+            <div class="stat-card">
+                <div class="stat-icon">📊</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="totalLicenses">0</div>
+                    <div class="stat-label">Total Licencias</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">✅</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="activeLicenses">0</div>
+                    <div class="stat-label">Activas</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">❌</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="expiredLicenses">0</div>
+                    <div class="stat-label">Expiradas</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">🧪</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="trialLicenses">0</div>
+                    <div class="stat-label">Trial</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TABLA DE LICENCIAS -->
+        <div class="table-container">
+            <table id="licensesTable">
+                <thead>
+                    <tr>
+                        <th>Estado</th>
+                        <th>Email</th>
+                        <th>Nombre</th>
+                        <th>Tipo</th>
+                        <th>Expira</th>
+                        <th>Días Restantes</th>
+                        <th>Validaciones</th>
+                        <th>Acciones</th>
+                    </tr>
+                </thead>
+                <tbody id="licensesTableBody">
+                    <!-- Se llena dinámicamente -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- ============================== -->
+    <!-- MODAL PARA EDITAR LICENCIA -->
+    <!-- ============================== -->
+    <div id="editModal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>✏️ Editar Licencia</h2>
+                <button class="modal-close" id="closeModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Email:</label>
+                    <input type="text" id="modalEmail" readonly>
+                </div>
+                <div class="form-group">
+                    <label>Nombre:</label>
+                    <input type="text" id="modalName" readonly>
+                </div>
+                <div class="form-group">
+                    <label>Tipo de Licencia:</label>
+                    <select id="modalLicenseType">
+                        <option value="Trial">Trial</option>
+                        <option value="Monthly">Mensual</option>
+                        <option value="Annual">Anual</option>
+                        <option value="Lifetime">Vitalicia</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Fecha de Expiración:</label>
+                    <input type="datetime-local" id="modalExpirationDate">
+                </div>
+                <div class="form-group">
+                    <label>Agregar Días:</label>
+                    <div class="days-buttons">
+                        <button class="btn-days" data-days="7">+7 días</button>
+                        <button class="btn-days" data-days="30">+30 días</button>
+                        <button class="btn-days" data-days="90">+90 días</button>
+                        <button class="btn-days" data-days="365">+365 días</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Máximo de Activaciones:</label>
+                    <input type="number" id="modalMaxActivations" min="1" max="10" value="2">
+                    <small style="color: #94a3b8;">Número máximo de equipos permitidos</small>
+                </div>
+                <div class="form-group">
+                    <label>Estado:</label>
+                    <div class="toggle-switch">
+                        <input type="checkbox" id="modalIsActive">
+                        <label for="modalIsActive">Licencia Activa</label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Activaciones Actuales:</label>
+                    <div id="modalActivations" style="max-height: 150px; overflow-y: auto; background: #1e293b; padding: 10px; border-radius: 6px; font-size: 12px;">
+                        <span style="color: #94a3b8;">No hay activaciones</span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="saveChangesBtn" class="btn-primary">💾 Guardar Cambios</button>
+                <button id="deleteLicenseBtn" class="btn-danger">🗑️ Eliminar Licencia</button>
+                <button id="cancelBtn" class="btn-secondary">Cancelar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- LOADING OVERLAY -->
+    <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+        <p>Cargando...</p>
+    </div>
+
+    <!-- ============================== -->
+    <!-- SCRIPTS -->
+    <!-- ============================== -->
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+
+    <!-- Configuración de Firebase -->
+    <script src="firebase-config.js"></script>
+
+    <!-- Lógica del panel -->
+    <script src="admin-panel.js"></script>
+</body>
+</html>
