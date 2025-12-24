@@ -109,12 +109,24 @@ public static class EncofradoBaseHelper
     {
         try
         {
-            // Paso 1: Crear el sólido de encofrado inicial (completo)
+            // Paso 1: Obtener sólido del elemento original para calcular dirección correcta
+            Solid solidoElemento = elementoOriginal != null ?
+                ObtenerSolidoPrincipal(elementoOriginal) : null;
+
+            // Paso 2: Calcular dirección de extrusión HACIA AFUERA
+            XYZ direccionExtrusion = cara.FaceNormal;
+            if (solidoElemento != null)
+            {
+                direccionExtrusion = DireccionExtrusionHelper.ObtenerDireccionHaciaAfuera(
+                    cara, solidoElemento);
+            }
+
+            // Paso 3: Crear el sólido de encofrado inicial (completo)
             var curveLoops = cara.GetEdgesAsCurveLoops();
             if (curveLoops == null || curveLoops.Count == 0) return null;
 
             Solid solidoEncofrado = GeometryCreationUtilities.CreateExtrusionGeometry(
-                curveLoops, cara.FaceNormal, espesor);
+                curveLoops, direccionExtrusion, espesor);
 
             if (solidoEncofrado == null || solidoEncofrado.Volume < MIN_VOLUMEN)
                 return null;
@@ -196,11 +208,22 @@ public static class EncofradoBaseHelper
             // Si falla todo, intentar crear encofrado básico
             try
             {
+                // Calcular dirección correcta incluso para el fallback
+                Solid solidoElemento = elementoOriginal != null ?
+                    ObtenerSolidoPrincipal(elementoOriginal) : null;
+
+                XYZ direccionExtrusion = cara.FaceNormal;
+                if (solidoElemento != null)
+                {
+                    direccionExtrusion = DireccionExtrusionHelper.ObtenerDireccionHaciaAfuera(
+                        cara, solidoElemento);
+                }
+
                 var curveLoops = cara.GetEdgesAsCurveLoops();
                 if (curveLoops != null && curveLoops.Count > 0)
                 {
                     var solidoBasico = GeometryCreationUtilities.CreateExtrusionGeometry(
-                        curveLoops, cara.FaceNormal, espesor);
+                        curveLoops, direccionExtrusion, espesor);
                     
                     if (solidoBasico != null && solidoBasico.Volume > MIN_VOLUMEN)
                     {
