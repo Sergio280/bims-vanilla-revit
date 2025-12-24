@@ -1,0 +1,156 @@
+<Window x:Class="ClosestGridsAddinVANILLA.Views.EncofradoAutomaticoDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Encofrado Automatizado - Configuración"
+        Height="450" Width="600"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        Background="#F5F5F5">
+
+    <Window.Resources>
+        <Style TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Padding" Value="5"/>
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="Height" Value="35"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="20"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="15"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="20"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="15"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Encabezado -->
+        <Border Grid.Row="0" Background="#2196F3" CornerRadius="5" Padding="15,10">
+            <StackPanel>
+                <TextBlock Text="⚙ CONFIGURACIÓN DE ENCOFRADO AUTOMATIZADO"
+                           FontWeight="Bold"
+                           FontSize="16"
+                           Foreground="White"/>
+                <TextBlock Text="Seleccione los tipos de muro y suelo para el encofrado"
+                           FontSize="12"
+                           Foreground="#E3F2FD"
+                           Margin="0,5,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Tipo de Muro -->
+        <StackPanel Grid.Row="2">
+            <TextBlock Text="🧱 Tipo de Muro (para encofrados verticales):"
+                       FontWeight="SemiBold"
+                       Margin="0,0,0,5"/>
+            <ComboBox x:Name="cmbWallType"
+                      DisplayMemberPath="Name"
+                      SelectionChanged="CmbWallType_SelectionChanged"/>
+            <TextBlock x:Name="txtWallTypeInfo"
+                       Text="Espesor: --"
+                       FontSize="11"
+                       Foreground="#666"
+                       Margin="5,3,0,0"/>
+        </StackPanel>
+
+        <!-- Tipo de Suelo -->
+        <StackPanel Grid.Row="4">
+            <TextBlock Text="📐 Tipo de Suelo (para encofrados horizontales):"
+                       FontWeight="SemiBold"
+                       Margin="0,0,0,5"/>
+            <ComboBox x:Name="cmbFloorType"
+                      DisplayMemberPath="Name"
+                      SelectionChanged="CmbFloorType_SelectionChanged"/>
+            <TextBlock x:Name="txtFloorTypeInfo"
+                       Text="Espesor: --"
+                       FontSize="11"
+                       Foreground="#666"
+                       Margin="5,3,0,0"/>
+        </StackPanel>
+
+        <!-- Información del sistema -->
+        <Border Grid.Row="6"
+                Background="White"
+                BorderBrush="#E0E0E0"
+                BorderThickness="1"
+                CornerRadius="5"
+                Padding="15">
+            <StackPanel>
+                <TextBlock Text="ℹ Sistema de Clasificación Automática"
+                           FontWeight="SemiBold"
+                           Foreground="#1976D2"
+                           Margin="0,0,0,10"/>
+
+                <TextBlock TextWrapping="Wrap" Foreground="#555">
+                    <Run Text="El sistema aplica reglas inteligentes según el tipo de elemento:"/>
+                </TextBlock>
+
+                <StackPanel Margin="10,8,0,0">
+                    <TextBlock Text="• Columnas → caras verticales → Muros" FontSize="12" Foreground="#333"/>
+                    <TextBlock Text="• Vigas → laterales=Muros, inferior=Suelo" FontSize="12" Foreground="#333" Margin="0,2,0,0"/>
+                    <TextBlock Text="• Muros → laterales → Muros" FontSize="12" Foreground="#333" Margin="0,2,0,0"/>
+                    <TextBlock Text="• Losas → cara inferior → Suelo" FontSize="12" Foreground="#333" Margin="0,2,0,0"/>
+                    <TextBlock Text="• Escaleras → verticales=Muros, inclinadas=Suelos" FontSize="12" Foreground="#333" Margin="0,2,0,0"/>
+                </StackPanel>
+
+                <TextBlock TextWrapping="Wrap" Foreground="#555" Margin="0,10,0,0">
+                    <Run Text="✓ Dirección de extrusión siempre hacia afuera"/>
+                    <LineBreak/>
+                    <Run Text="✓ Recortes automáticos por elementos adyacentes"/>
+                    <LineBreak/>
+                    <Run Text="✓ Conversión a Wall/Floor nativos con curvas recortadas"/>
+                </TextBlock>
+            </StackPanel>
+        </Border>
+
+        <!-- Instrucciones -->
+        <TextBlock Grid.Row="8"
+                   TextWrapping="Wrap"
+                   Foreground="#757575"
+                   FontSize="12"
+                   Margin="0,0,0,10">
+            <Run Text="📋 Siguiente paso:"/>
+            <Run Text=" Después de aceptar, seleccione los elementos estructurales (columnas, vigas, muros, losas, escaleras) a encofrar."
+                 FontWeight="SemiBold"/>
+        </TextBlock>
+
+        <!-- Botones -->
+        <Grid Grid.Row="10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="10"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <Button Grid.Column="0"
+                    Content="❌ Cancelar"
+                    Click="BtnCancelar_Click"
+                    Background="#E0E0E0"
+                    Foreground="#333"/>
+
+            <Button Grid.Column="2"
+                    x:Name="btnAceptar"
+                    Content="✓ Aceptar"
+                    Click="BtnAceptar_Click"
+                    Background="#4CAF50"
+                    Foreground="White"
+                    FontWeight="SemiBold"
+                    IsEnabled="False"/>
+        </Grid>
+    </Grid>
+</Window>

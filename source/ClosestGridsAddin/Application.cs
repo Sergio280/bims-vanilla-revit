@@ -208,6 +208,32 @@ public class Application : IExternalApplication
         btnFormwBims.LargeImage = LoadIconFromFile("btnFormwBims.png");
         panelEncofrado.AddItem(btnFormwBims);
 
+        var btnEncofradoAutomatico = new PushButtonData(
+            "EncofradoAutomaticoButton",
+            "Encofrado\nAutomatizado",
+            typeof(Application).Assembly.Location,
+            typeof(EncofradoAutomaticoCommand).FullName);
+        btnEncofradoAutomatico.ToolTip = "Sistema Integrado de Encofrado Automatizado";
+        btnEncofradoAutomatico.LongDescription = "Sistema completamente automatizado de encofrado:\n\n" +
+            "✅ CARACTERÍSTICAS:\n" +
+            "• Clasificación inteligente por tipo de elemento\n" +
+            "• Extrusión siempre hacia afuera del elemento\n" +
+            "• Recortes automáticos por elementos adyacentes\n" +
+            "• Conversión directa a Wall/Floor nativos\n" +
+            "• Curvas recortadas preservadas\n\n" +
+            "📋 REGLAS AUTOMÁTICAS:\n" +
+            "• Columnas → caras verticales → Muros\n" +
+            "• Vigas → laterales=Muros, inferior=Suelo\n" +
+            "• Muros → laterales → Muros\n" +
+            "• Losas → inferior → Suelo\n" +
+            "• Escaleras → verticales=Muros, inclinadas=Suelos\n\n" +
+            "⚡ FLUJO:\n" +
+            "1. Seleccione tipos de muro y suelo\n" +
+            "2. Seleccione elementos estructurales\n" +
+            "3. Sistema crea Wall/Floor nativos automáticamente";
+        btnEncofradoAutomatico.LargeImage = LoadIconFromFile("btnEncofradoAutomatico.png");
+        panelEncofrado.AddItem(btnEncofradoAutomatico);
+
         var btnFormwBimsAutoConvert = new PushButtonData(
             "FormwBimsAutoConvertButton",
             "FORMWBIMS\nAuto-Convert",
